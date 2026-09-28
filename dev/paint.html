@@ -1,0 +1,26 @@
+<!doctype html><html><body style="background:#222;margin:0"><div id="out"></div><script type="module">
+import { loadPhoto, canvasToImg, warp, imgToCanvas, visibleExtent } from '../src/lib/imaging';
+import { wallMask, repaint } from '../src/lib/recolor';
+const blob = await (await fetch('./samples/3.jpg')).blob();
+const c = await loadPhoto(blob, 2000);
+const src = canvasToImg(c);
+const s = c.width / 1500;
+const quad = [[65,540],[900,225],[900,1967],[100,1440]].map(([x,y])=>({x:x*s,y:y*s}));
+const W = 60, H = 96;
+const ext = visibleExtent(c.width, c.height, quad, W, H, 1);
+const ppi = 12;
+const t0 = performance.now();
+const r = warp(src, { quad, w: W, h: H, ...ext, pxPerUnit: ppi });
+const region = { x0: (0-ext.x0)*ppi, y0: (0-ext.y0)*ppi, x1: (W-ext.x0)*ppi + 400, y1: (H-ext.y0)*ppi };
+const t1 = performance.now();
+const mask = wallMask(r, region, [], 0.8);
+const t2 = performance.now();
+const out = document.getElementById('out');
+for (const hex of ['#2f3d4c', '#9aa38f', '#c9a88f']) {
+  const p = repaint(r, mask, hex, 1);
+  const cv = imgToCanvas(p); cv.style.width='380px'; out.append(cv);
+}
+const mc = imgToCanvas({data: new Uint8ClampedArray(mask.length*4).map((_,i)=> i%4===3?255:mask[i>>2]), width:r.width, height:r.height}); mc.style.width='380px'; out.append(mc);
+window.results = { ext, warpMs: t1-t0, maskMs: t2-t1, size: [r.width, r.height] };
+window.done = true;
+</script></body></html>
