@@ -1,12 +1,12 @@
 // Wall-colour pipeline: detect the wall on the original photo, repaint it, and derive the
 // straightened version from the painted photo so both views always match.
 import { blobUrl, deleteBlob } from './db';
-import { applyH } from './geometry';
+import { applyH, invert3, multiply3, type Mat3 } from './geometry';
 import { canvasToImg, imgToCanvas, loadImageElement, makeCanvas, warp, type Img } from './imaging';
 import { storeCanvas } from './pipeline';
-import { wallToSource } from './projection';
+import { localScale, wallToSource } from './projection';
 import { detectWallMask, maskPreview, repaint, upsampleMask, type MaskOptions, type SmallMask } from './recolor';
-import type { Wall, WallPaint, Zone } from './types';
+import type { Pt, Vantage, Wall, WallPaint, Zone } from './types';
 
 const imgCache = new Map<string, Promise<Img>>();
 
@@ -89,4 +89,44 @@ export async function applyPaint(wall: Wall, zones: Zone[], paint: WallPaint): P
   await deleteBlob(wall.paintedBlobId);
   await deleteBlob(wall.paintedSrcBlobId);
   return { paintedBlobId, paintedSrcBlobId };
+}
+
+/** Everything that affects the painted result, for knowing when a cached render is stale. */
+export function paintKeyOf(wall: Wall, zones: Zone[], paint: WallPaint): string {
+  return JSON.stringify([wall.sourceBlobId, wall.quad, wall.ceilingHeight, paint, zones.filter((z) => z.noPaint)]);
+}
+
+/**
+ * Repaint an extra room photo. Everything the user did on the main photo (taps, brush strokes,
+ * no-paint zones) lives on the wall plane, so it maps into the other photo through the wall.
+ */
+export async function paintVantage(wall: Wall, v: Vantage, zones: Zone[], paint: WallPaint): Promise<string> {
+  const main = await loadBlobImg(wall.sourceBlobId);
+  const src = await loadBlobImg(v.sourceBlobId);
+  const toWall = invert3(wallToSource(wall));
+  const Hv = v.H as Mat3;
+  const map = (p: Pt): Pt => {
+    const w = applyH(toWall, p.x * main.width, p.y * main.height);
+    const q = applyH(Hv, w.x, w.y);
+    return { x: q.x / src.width, y: q.y / src.height };
+  };
+  const mainToV = multiply3(Hv, toWall);
+  const mapped: WallPaint = {
+    ...paint,
+    taps: (paint.taps ?? []).map(map),
+    strokes: (paint.strokes ?? []).map((s) => {
+      const c = { x: s.pts[0].x * main.width, y: s.pts[0].y * main.height };
+      const k = localScale(mainToV, c);
+      return { mode: s.mode, r: (s.r * main.width * k) / src.width, pts: s.pts.map(map) };
+    }),
+  };
+  // A "virtual wall" whose pinned rectangle is where the measured area appears in this photo.
+  const quad = [
+    applyH(Hv, 0, 0), applyH(Hv, wall.refW, 0), applyH(Hv, wall.refW, wall.refH), applyH(Hv, 0, wall.refH),
+  ] as Wall['quad'];
+  const virtual: Wall = { ...wall, sourceBlobId: v.sourceBlobId, quad };
+  const { mask } = await wallMaskFor(virtual, zones, mapped);
+  const full = upsampleMask(mask, src.width, src.height);
+  const painted = repaint(src, full, paint.hex, paint.strength);
+  return storeCanvas(imgToCanvas(painted), 'image/jpeg', 0.9);
 }

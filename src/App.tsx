@@ -6,6 +6,7 @@ import { FramesScreen, PicturesScreen } from './screens/Inventory';
 import { PictureEditor } from './screens/PictureEditor';
 import { ProjectsScreen, SettingsModal } from './screens/Projects';
 import { WallEditor } from './screens/WallEditor';
+import { VantageEditor } from './screens/VantageEditor';
 import { navigate, openModal, useStore } from './lib/store';
 
 export function App() {
@@ -46,6 +47,7 @@ export function App() {
       {modal?.kind === 'frame' && <FrameEditor id={modal.id} key={modal.id ?? 'new'} />}
       {modal?.kind === 'picture' && <PictureEditor id={modal.id} key={modal.id ?? 'new'} />}
       {modal?.kind === 'wall' && <WallEditor projectId={modal.projectId} />}
+      {modal?.kind === 'vantage' && <VantageEditor projectId={modal.projectId} id={modal.id} key={modal.id ?? 'new'} />}
       {modal?.kind === 'settings' && <SettingsModal />}
       {toast && <div class="toast glass strong" key={toast.id}>{toast.text}</div>}
     </>

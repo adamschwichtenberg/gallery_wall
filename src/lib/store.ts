@@ -13,6 +13,7 @@ export type Modal =
   | { kind: 'frame'; id?: string }
   | { kind: 'picture'; id?: string }
   | { kind: 'wall'; projectId: string }
+  | { kind: 'vantage'; projectId: string; id?: string }
   | { kind: 'settings' }
   | null;
 

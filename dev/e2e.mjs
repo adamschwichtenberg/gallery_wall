@@ -23,6 +23,18 @@ async function dragImagePoint(testid, x, y) {
   await p.mouse.move(img.x + x * k, img.y + y * k, { steps: 4 });
   await p.mouse.up();
 }
+async function dragStagePoint(stageIndex, testid, x, y) {
+  const stage = p.locator('.stage-img').nth(stageIndex);
+  const img = await stage.boundingBox();
+  const natural = await stage.evaluate((el) => parseFloat(el.style.width));
+  const k = img.width / natural;
+  const pin = await p.getByTestId(testid).boundingBox();
+  const sx = pin.x + pin.width / 2, sy = pin.y + pin.height / 2;
+  await p.mouse.move(sx, sy);
+  await p.mouse.down();
+  await p.mouse.move(img.x + x * k, img.y + y * k, { steps: 8 });
+  await p.mouse.up();
+}
 async function typeLen(label, v) {
   const input = p.locator('label.field', { hasText: label }).locator('input').first();
   await input.fill(v);
@@ -157,6 +169,42 @@ await step('paint', async () => {
   await shot('14c-paint-erased');
   await p.getByTestId('paint-tool-none').click();
   await p.keyboard.press('Escape');
+});
+
+await step('extra viewpoint', async () => {
+  // Simulate a photo from another spot: the main photo under a known transform.
+  const T = [0.85, 0.06, -0.05, 0.85, 180, 150];
+  const dataUrl = await p.evaluate(async (T) => {
+    const img = new Image(); img.src = '/dev/samples/3.jpg'; await img.decode();
+    const c = document.createElement('canvas'); c.width = 1500; c.height = 2000;
+    const x = c.getContext('2d'); x.fillStyle = '#2a2a2a'; x.fillRect(0, 0, c.width, c.height);
+    x.setTransform(...T); x.drawImage(img, 0, 0);
+    return c.toDataURL('image/jpeg', 0.9);
+  }, T);
+  await p.getByTestId('add-vantage').click();
+  await p.getByTestId('library-input').setInputFiles({ name: 'view2.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(dataUrl.split(',')[1], 'base64') });
+  await p.waitForSelector('text=Match points');
+  await p.waitForTimeout(500);
+  const quad = [[90, 560], [900, 240], [900, 1960], [105, 1440]];
+  for (let i = 0; i < 4; i++) {
+    const [qx, qy] = quad[i];
+    await dragStagePoint(1, `new-pt-${i}`, T[0] * qx + T[2] * qy + T[4], T[1] * qx + T[3] * qy + T[5]);
+  }
+  await shot('14e-vantage-match');
+  const fit = await p.locator('text=Fit:').textContent();
+  console.log('   ', fit);
+  await p.getByTestId('next').click();
+  await p.waitForSelector('text=Does it line up?');
+  await p.waitForTimeout(500);
+  await shot('14f-vantage-check');
+  await p.getByTestId('save').click();
+  await p.waitForSelector('.fullscreen-editor', { state: 'detached' });
+  await p.waitForTimeout(800);
+  await p.waitForFunction(() => !document.querySelector('.hud-top .spinner'), null, { timeout: 30000 });
+  await p.waitForTimeout(500);
+  await shot('14g-vantage-arrange');
+  await p.getByTestId('mode-photo').click();
+  await p.waitForTimeout(500);
 });
 
 await step('straight-on toggle', async () => {

@@ -117,3 +117,20 @@ describe('arrange', () => {
     expect(r[0].picture.id).toBe('tall');
   });
 });
+
+import { homographyLSQ, reprojectionError } from '../src/lib/geometry';
+describe('least-squares homography', () => {
+  it('recovers a perspective map from noisy extra points', () => {
+    const truth = homography(
+      [{ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 96 }, { x: 0, y: 96 }],
+      [{ x: 120, y: 300 }, { x: 900, y: 120 }, { x: 950, y: 1800 }, { x: 150, y: 1500 }],
+    );
+    const src = [];
+    for (let i = 0; i < 8; i++) src.push({ x: (i * 37) % 60, y: (i * 53) % 96 });
+    const dst = src.map((p, i) => { const q = applyH(truth, p.x, p.y); return { x: q.x + (i % 2 ? 1.5 : -1.5), y: q.y + (i % 3 ? 1 : -1) }; });
+    const H = homographyLSQ(src, dst);
+    const probe = applyH(H, 30, 48), exact = applyH(truth, 30, 48);
+    expect(Math.hypot(probe.x - exact.x, probe.y - exact.y)).toBeLessThan(4);
+    expect(reprojectionError(H, src, dst)).toBeLessThan(3);
+  });
+});

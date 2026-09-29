@@ -125,7 +125,11 @@ export async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['it
  */
 export async function renderPhotoLayout(project: Project, layout: Layout, frames: Map<string, Frame>, pictures: Map<string, Picture>, o: RenderOpts): Promise<HTMLCanvasElement> {
   const wall = project.wall!;
-  const srcId = o.paint && project.settings.showPaint && wall.paintedSrcBlobId ? wall.paintedSrcBlobId : wall.sourceBlobId;
+  const v = project.settings.viewMode === 'vantage' ? project.vantages?.find((x) => x.id === project.settings.vantageId) : undefined;
+  const paintOk = o.paint && project.settings.showPaint;
+  const srcId = v
+    ? (paintOk && v.paintedBlobId) || v.sourceBlobId
+    : (paintOk && wall.paintedSrcBlobId) || wall.sourceBlobId;
   const base = await img(srcId);
   const k = Math.min(1, o.maxSide / Math.max(base.naturalWidth, base.naturalHeight));
   const out = makeCanvas(base.naturalWidth * k, base.naturalHeight * k);
@@ -135,7 +139,7 @@ export async function renderPhotoLayout(project: Project, layout: Layout, frames
   const u = unionBox(items.map((i) => footprint(i, frames.get(i.frameId)!)));
   if (!u) return out;
   // Wall inches → output pixels.
-  const H = multiply3(scaleMat(k), wallToSource(wall));
+  const H = multiply3(scaleMat(k), v ? (v.H as number[]) : wallToSource(wall));
   const pad = 2;
   const lx0 = u.x - pad, ly0 = u.y - pad, lw = u.w + pad * 2, lh = u.h + pad * 2;
   const ppi = Math.min(3000 / Math.max(lw, lh), Math.max(8, localScale(H, { x: u.x + u.w / 2, y: u.y + u.h / 2 }) * 1.5));

@@ -23,6 +23,8 @@ interface Props {
   onBackgroundDown?: (e: PointerEvent, api: StageApi) => boolean | void; // return true to claim the gesture
   onBackgroundMove?: (e: PointerEvent, api: StageApi) => void;
   onBackgroundUp?: (e: PointerEvent, api: StageApi) => void;
+  /** A short, still press on the background (not a pan). */
+  onTap?: (p: Pt) => void;
   loupe?: Pt | null;
   padding?: number;
   checker?: boolean;
@@ -36,14 +38,15 @@ export function PhotoStage(props: Props) {
   const viewRef = useRef(view);
   viewRef.current = view;
   const pointers = useRef(new Map<number, Pt>());
-  const gesture = useRef<{ kind: 'pan' | 'pinch' | 'claimed'; start: View; p0: Pt; d0?: number; c0?: Pt } | null>(null);
+  const gesture = useRef<{ kind: 'pan' | 'pinch' | 'claimed'; start: View; p0: Pt; d0?: number; c0?: Pt; t0?: number; moved?: boolean } | null>(null);
   const imgEl = useRef<HTMLImageElement>(null);
 
   const fit = () => {
     const el = host.current;
     if (!el || !props.imgW) return;
     const r = el.getBoundingClientRect();
-    const pad = props.padding ?? 40;
+    const pad = Math.min(props.padding ?? 40, r.width / 6, r.height / 6);
+    if (r.width < 20 || r.height < 20) return; // not laid out yet; the ResizeObserver will retry
     const s = Math.min((r.width - pad * 2) / props.imgW, (r.height - pad * 2) / props.imgH);
     setView({ s, tx: (r.width - props.imgW * s) / 2, ty: (r.height - props.imgH * s) / 2 });
   };
@@ -81,7 +84,7 @@ export function PhotoStage(props: Props) {
       gesture.current = { kind: 'claimed', start: viewRef.current, p0: local(e) };
       return;
     }
-    gesture.current = { kind: 'pan', start: viewRef.current, p0: local(e) };
+    gesture.current = { kind: 'pan', start: viewRef.current, p0: local(e), t0: Date.now(), moved: false };
   };
   const onMove = (e: PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return;
@@ -91,6 +94,7 @@ export function PhotoStage(props: Props) {
     if (g.kind === 'claimed') return props.onBackgroundMove?.(e, api);
     if (g.kind === 'pan') {
       const p = local(e);
+      if (Math.hypot(p.x - g.p0.x, p.y - g.p0.y) > 6) g.moved = true;
       setView({ ...g.start, tx: g.start.tx + p.x - g.p0.x, ty: g.start.ty + p.y - g.p0.y });
     } else if (g.kind === 'pinch' && pointers.current.size >= 2) {
       const [a, b] = [...pointers.current.values()];
@@ -105,6 +109,7 @@ export function PhotoStage(props: Props) {
     pointers.current.delete(e.pointerId);
     const g = gesture.current;
     if (g?.kind === 'claimed') props.onBackgroundUp?.(e, api);
+    if (g?.kind === 'pan' && !g.moved && g.t0 && Date.now() - g.t0 < 500 && pointers.current.size === 0) props.onTap?.(api.toImage(e.clientX, e.clientY));
     if (pointers.current.size === 0) gesture.current = null;
     else if (g?.kind === 'pinch') {
       const [p] = [...pointers.current.values()];

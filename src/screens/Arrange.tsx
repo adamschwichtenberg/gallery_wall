@@ -5,6 +5,7 @@ import { Icon } from '../components/Icon';
 import { useBlobUrl, useImgSize } from '../components/ui';
 import { footprint, snap, suggestFill, unionBox, type Box, type GapMark, type Guide } from '../lib/arrange';
 import { deleteBlob, uid } from '../lib/db';
+import { paintKeyOf, paintVantage } from '../lib/paintwall';
 import { applyH, rectsOverlap, type Mat3 } from '../lib/geometry';
 import { cssMatrix, invert3, localScale, multiply3, scaleMat, viewMat, wallToSource, wallToStraight } from '../lib/projection';
 import { storeCanvas } from '../lib/pipeline';
@@ -40,7 +41,7 @@ export interface ArrangeCtx {
   setPanel: (p: PanelKind | null) => void;
   units: 'in' | 'cm';
   clientToWall: (cx: number, cy: number) => Pt;
-  mode: 'photo' | 'straight';
+  mode: 'photo' | 'straight' | 'vantage';
   paintTool: PaintTool;
   setPaintTool: (t: PaintTool) => void;
   brushPx: number;
@@ -122,21 +123,53 @@ function ArrangeInner({ id }: { id: string }) {
 
   const wall = project.wall;
   const st = project.settings;
-  const mode: 'photo' | 'straight' = wall && st.viewMode !== 'straight' ? 'photo' : 'straight';
+  const vantage = project.vantages?.find((v) => v.id === st.vantageId);
+  const mode: 'photo' | 'straight' | 'vantage' = !wall ? 'straight' : st.viewMode === 'straight' ? 'straight' : st.viewMode === 'vantage' && vantage ? 'vantage' : 'photo';
   const straightUrl = useBlobUrl(wall?.imageBlobId);
   const paintedUrl = useBlobUrl(wall?.paintedBlobId);
   const srcUrl = useBlobUrl(wall?.sourceBlobId);
   const paintedSrcUrl = useBlobUrl(wall?.paintedSrcBlobId);
   const straightSize = useImgSize(straightUrl);
   const srcSize = useImgSize(srcUrl);
+  const vUrl = useBlobUrl(vantage?.sourceBlobId);
+  const vSize = useImgSize(vUrl);
+  const paintKey = wall?.paint?.hex ? paintKeyOf(wall, project.zones, wall.paint) : '';
+  const vPaintedUrl = useBlobUrl(vantage && vantage.paintKey === paintKey ? vantage.paintedBlobId : undefined);
 
   const layout = activeLayout(project);
   const geom = wallGeometry(project);
 
   // ---- projection: wall inches → image pixels → screen ---------------------------------
-  const baseUrl = !wall ? undefined : mode === 'photo' ? (st.showPaint && paintedSrcUrl) || srcUrl : (st.showPaint && paintedUrl) || straightUrl;
-  const baseSize = !wall ? { w: 144, h: 96 } : mode === 'photo' ? srcSize : straightSize;
-  const H: Mat3 | null = !wall ? scaleMat(1) : !baseSize ? null : mode === 'photo' ? wallToSource(wall) : wallToStraight(wall, baseSize.w);
+  const baseUrl = !wall ? undefined
+    : mode === 'photo' ? (st.showPaint && paintedSrcUrl) || srcUrl
+    : mode === 'vantage' ? (st.showPaint && vPaintedUrl) || vUrl
+    : (st.showPaint && paintedUrl) || straightUrl;
+  const baseSize = !wall ? { w: 144, h: 96 } : mode === 'photo' ? srcSize : mode === 'vantage' ? vSize : straightSize;
+  const H: Mat3 | null = !wall ? scaleMat(1) : !baseSize ? null
+    : mode === 'photo' ? wallToSource(wall)
+    : mode === 'vantage' ? (vantage!.H as Mat3)
+    : wallToStraight(wall, baseSize.w);
+
+  // Extra viewpoints get their own painted copy, rendered when first viewed after a paint change.
+  const [vPainting, setVPainting] = useState(false);
+  useEffect(() => {
+    if (mode !== 'vantage' || !vantage || !wall?.paint?.hex || !st.showPaint || vantage.paintKey === paintKey) return;
+    let dead = false;
+    setVPainting(true);
+    (async () => {
+      try {
+        const blobId = await paintVantage(wall, vantage, project.zones, wall.paint!);
+        const p = getProject(id)!;
+        const old = p.vantages?.find((v) => v.id === vantage.id)?.paintedBlobId;
+        if (dead) { await deleteBlob(blobId); return; }
+        await saveProject({ ...p, vantages: (p.vantages ?? []).map((v) => (v.id === vantage.id ? { ...v, paintedBlobId: blobId, paintKey } : v)) }, false);
+        await deleteBlob(old);
+      } finally {
+        if (!dead) setVPainting(false);
+      }
+    })();
+    return () => { dead = true; };
+  }, [mode, vantage?.id, paintKey, st.showPaint]);
   const Hsrc: Mat3 | null = wall ? wallToSource(wall) : null;
 
   // ---- history -------------------------------------------------------------------
@@ -188,7 +221,7 @@ function ArrangeInner({ id }: { id: string }) {
     const pad = sidePad();
     const W = el.clientWidth - pad.l - pad.r, Hh = el.clientHeight - 170;
     let bx0: number, by0: number, bx1: number, by1: number;
-    if (mode === 'photo') {
+    if (mode !== 'straight') {
       // Show the whole photo as it was taken.
       bx0 = 0; by0 = 0; bx1 = baseSize.w; by1 = baseSize.h;
     } else {
@@ -733,11 +766,19 @@ function ArrangeInner({ id }: { id: string }) {
           <button class="btn icon-only ghost" onClick={redo} disabled={!hist.current.future.length} aria-label="Redo" data-testid="redo"><Icon name="redo" /></button>
           <div class="sep" />
           {wall && (
-            <div class="segmented" style={{ background: 'transparent', boxShadow: 'none' }}>
+            <div class="segmented view-switch" style={{ background: 'transparent', boxShadow: 'none' }}>
               <button class={mode === 'photo' ? 'on' : ''} data-testid="mode-photo" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, viewMode: 'photo' } }))}>Photo</button>
+              {(project.vantages ?? []).map((v) => (
+                <button key={v.id} class={mode === 'vantage' && vantage?.id === v.id ? 'on' : ''} data-testid="mode-vantage" onClick={() => {
+                  if (mode === 'vantage' && vantage?.id === v.id) openModal({ kind: 'vantage', projectId: project.id, id: v.id });
+                  else commit((p) => ({ ...p, settings: { ...p.settings, viewMode: 'vantage', vantageId: v.id } }));
+                }}>{v.name}</button>
+              ))}
               <button class={mode === 'straight' ? 'on' : ''} data-testid="mode-straight" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, viewMode: 'straight' } }))}>Straight-on</button>
+              <button data-testid="add-vantage" title="Add a photo from another spot in the room" onClick={() => openModal({ kind: 'vantage', projectId: project.id })}><Icon name="plus" size={16} /> View</button>
             </div>
           )}
+          {vPainting && <div class="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} title="Painting this view…" />}
           <div class="sep" />
           <button class={`btn icon-only ghost ${multi ? 'on' : ''}`} onClick={() => setMulti(!multi)} aria-label="Multi-select" title="Select several"><Icon name="select" /></button>
           <button class="btn icon-only ghost" onClick={fit} aria-label="Fit to screen"><Icon name="fit" /></button>

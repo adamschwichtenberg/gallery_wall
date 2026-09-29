@@ -179,3 +179,63 @@ export function orderQuad(pts: Pt[]): [Pt, Pt, Pt, Pt] {
   // atan2 order starting from -PI: TL(-3π/4), TR(-π/4), BR(π/4), BL(3π/4)
   return [sorted[0], sorted[1], sorted[2], sorted[3]];
 }
+
+/**
+ * Least-squares homography from N ≥ 4 point pairs (normalised DLT with h33 = 1).
+ * With exactly four pairs this equals `homography`; more pairs average out tapping error.
+ */
+export function homographyLSQ(src: Pt[], dst: Pt[]): Mat3 {
+  if (src.length === 4) return homography(src, dst);
+  const norm = (pts: Pt[]) => {
+    const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+    const cy = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+    const d = pts.reduce((a, p) => a + Math.hypot(p.x - cx, p.y - cy), 0) / pts.length || 1;
+    const s = Math.SQRT2 / d;
+    return { T: [s, 0, -s * cx, 0, s, -s * cy, 0, 0, 1] as Mat3, pts: pts.map((p) => ({ x: (p.x - cx) * s, y: (p.y - cy) * s })) };
+  };
+  const a = norm(src), b = norm(dst);
+  // Normal equations AᵀA h = Aᵀb for the 8 unknowns.
+  const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0));
+  const Atb = new Array(8).fill(0);
+  const add = (row: number[], rhs: number) => {
+    for (let i = 0; i < 8; i++) {
+      Atb[i] += row[i] * rhs;
+      for (let j = 0; j < 8; j++) AtA[i][j] += row[i] * row[j];
+    }
+  };
+  for (let i = 0; i < a.pts.length; i++) {
+    const { x, y } = a.pts[i];
+    const { x: u, y: v } = b.pts[i];
+    add([x, y, 1, 0, 0, 0, -u * x, -u * y], u);
+    add([0, 0, 0, x, y, 1, -v * x, -v * y], v);
+  }
+  const h = solveLinear(AtA, Atb);
+  const Hn = [...h, 1];
+  // Undo the normalisation: H = T_b⁻¹ · Hn · T_a
+  return multiply3(multiply3(invert3(b.T), Hn), a.T);
+}
+
+function solveLinear(A: number[][], b: number[]): number[] {
+  const n = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const d = M[c][c];
+    if (Math.abs(d) < 1e-12) throw new Error('Points are too close together or in a line');
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / d;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+
+/** Mean distance (in dst units) between mapped src points and dst points. */
+export function reprojectionError(H: Mat3, src: Pt[], dst: Pt[]): number {
+  let e = 0;
+  for (let i = 0; i < src.length; i++) e += dist(applyH(H, src[i].x, src[i].y), dst[i]);
+  return e / Math.max(1, src.length);
+}

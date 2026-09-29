@@ -165,8 +165,23 @@ export interface ProjectSettings {
   snap: boolean;
   showZones: boolean;
   showPaint: boolean;
-  /** 'photo': work on the photo as taken (frames follow its perspective). 'straight': squared-up wall. */
-  viewMode?: 'photo' | 'straight';
+  /** 'photo': the main photo as taken; 'straight': squared-up wall; 'vantage': one of the extra room photos. */
+  viewMode?: 'photo' | 'straight' | 'vantage';
+  vantageId?: string;
+}
+
+/** An extra photo of the same wall from another spot in the room. */
+export interface Vantage {
+  id: string;
+  name: string;
+  sourceBlobId: string;
+  /** Matched reference points: where each is on the wall (inches) and in this photo (pixels). */
+  points: { wall: Pt; photo: Pt }[];
+  /** Wall inches → this photo's pixels (least-squares fit of the points). */
+  H: number[];
+  paintedBlobId?: string;
+  /** Which paint settings paintedBlobId was rendered with. */
+  paintKey?: string;
 }
 
 export interface Project {
@@ -176,6 +191,7 @@ export interface Project {
   updatedAt: number;
   wall?: Wall;
   zones: Zone[];
+  vantages?: Vantage[];
   layouts: Layout[];
   activeLayoutId: string;
   settings: ProjectSettings;
