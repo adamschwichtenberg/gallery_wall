@@ -45,6 +45,7 @@ export function FrameEditor({ id }: { id?: string }) {
   // Details
   const [name, setName] = useState(existing?.name ?? '');
   const [qty, setQty] = useState(existing?.qty ?? 1);
+  const [depth, setDepth] = useState(existing?.depthIn ?? 1);
   const [tags, setTags] = useState<FrameTags | null>(existing?.tags ?? null);
   const [tagText, setTagText] = useState('');
   const [notes, setNotes] = useState(existing?.notes ?? '');
@@ -192,6 +193,7 @@ export function FrameEditor({ id }: { id?: string }) {
         qty: Math.max(1, qty),
         widthIn: wIn,
         heightIn: hIn,
+        depthIn: depth > 0 ? depth : 1,
         imageBlobId,
         padX,
         padY,
@@ -381,6 +383,7 @@ export function FrameEditor({ id }: { id?: string }) {
                       <button class="btn icon-only" onClick={() => setQty(qty + 1)}><Icon name="plus" /></button>
                     </div>
                   </label>
+                  <LengthInput label="Depth off the wall (for 3D and AR)" value={depth} onChange={setDepth} />
                   <div class="section-title">Shape</div>
                   <div class="chips">
                     {SHAPES.map((s) => <button key={s} class={`chip ${tags.shape === s ? 'on' : ''}`} onClick={() => setTags({ ...tags, shape: s })}>{s}</button>)}

@@ -13,6 +13,7 @@ import { activeLayout, getProject, navigate, openModal, saveProject, useStore } 
 import type { Frame, Layout, OpeningFill, PaintStroke, Picture, PlacedItem, Project, Pt, Zone } from '../lib/types';
 import { fmtLen } from '../lib/units';
 import { ArrangePanels, type PanelKind } from './ArrangePanels';
+import { View3D } from './View3D';
 
 export type Snapshot = Pick<Project, 'layouts' | 'activeLayoutId' | 'zones' | 'settings'>;
 
@@ -114,6 +115,7 @@ function ArrangeInner({ id }: { id: string }) {
   const [brushPx, setBrushPx] = useState(36);
   const [maskOverlay, setMaskOverlay] = useState<MaskOverlay | null>(null);
   const [strokeDraft, setStrokeDraft] = useState<Pt[] | null>(null);
+  const [show3d, setShow3d] = useState(false);
   const [, bump] = useState(0);
   const host = useRef<HTMLDivElement>(null);
   const hist = useRef<{ past: Snapshot[]; future: Snapshot[] }>({ past: [], future: [] });
@@ -755,6 +757,7 @@ function ArrangeInner({ id }: { id: string }) {
             <Icon name={icon} /> <span class="lbl-sm">{label}</span>
           </button>
         ))}
+        <button class="btn ghost" data-testid="tool-3d" onClick={() => setShow3d(true)}><Icon name="cube" /> <span class="lbl-sm">3D</span></button>
         <div class="sep" />
         <button class={`btn icon-only ghost ${st.snap ? 'on' : ''}`} aria-label="Snapping" title="Snapping" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, snap: !p.settings.snap } }))}><Icon name="magnet" /></button>
         <button class={`btn icon-only ghost ${st.showEyeLevel ? 'on' : ''}`} aria-label="Eye level line" title="Eye level line" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, showEyeLevel: !p.settings.showEyeLevel } }))}><Icon name="eye" /></button>
@@ -762,6 +765,7 @@ function ArrangeInner({ id }: { id: string }) {
       </div>
 
       <ArrangePanels ctx={ctx} />
+      {show3d && <View3D project={project} layout={layout} frames={frames} pictures={pictures} onClose={() => setShow3d(false)} />}
 
       {!project.wall && panel !== 'wall' && (
         <div style={{ position: 'absolute', top: 'calc(var(--safe-t) + 80px)', left: '50%', transform: 'translateX(-50%)', zIndex: 16 }}>

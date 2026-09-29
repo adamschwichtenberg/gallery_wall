@@ -41,6 +41,8 @@ export interface Frame {
   qty: number;
   widthIn: number;
   heightIn: number;
+  /** How far the frame stands off the wall (for 3D and AR). Defaults to 1". */
+  depthIn?: number;
   /** Straightened image of the frame. Covers [-padX, W+padX] x [-padY, H+padY] inches. */
   imageBlobId: string;
   padX: number;

@@ -55,6 +55,8 @@ const P: Record<string, string> = {
   wand: 'M4 20L15 9M15 4v2M20 9h-2M18.5 5.5l-1.4 1.4M12 6.5l1 1M17.5 12l-1-1',
   minus: 'M5 12h14',
   folder: 'M3 6h6l2 2h10v11H3z',
+  cube: 'M12 2l9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10',
+  views: 'M3 7h12v12H3zM7 3h14v12',
 };
 
 export function Icon({ name, size = 20, class: cls }: { name: string; size?: number; class?: string }) {

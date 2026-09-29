@@ -174,6 +174,25 @@ await step('export', async () => {
   await shot('15-export');
 });
 
+await step('3D view', async () => {
+  await p.keyboard.press('Escape');
+  await p.getByTestId('tool-3d').click();
+  await p.waitForSelector('[data-testid=three-host] canvas', { timeout: 30000 });
+  await p.waitForFunction(() => !document.querySelector('.busy'), null, { timeout: 30000 });
+  await p.waitForTimeout(1500);
+  await shot('16a-3d-front');
+  await p.locator('button', { hasText: 'From the left' }).click();
+  await p.waitForTimeout(1200);
+  await shot('16b-3d-left');
+  const dl = p.waitForEvent('download', { timeout: 60000 });
+  await p.locator('.fullscreen-editor [data-testid=share-ar]').click();
+  const file = await dl;
+  const path = `${OUT}/gallery.usdz`;
+  await file.saveAs(path);
+  console.log('   usdz saved:', file.suggestedFilename());
+  await p.locator('[aria-label="Close 3D view"]').click();
+});
+
 await step('tray has frames only', async () => {
   await p.getByTestId('tool-inventory').click();
   const hasPicturesTab = await p.locator('[data-testid=panel-inventory] .segmented button', { hasText: 'Pictures' }).count();

@@ -14,7 +14,7 @@ export interface RenderOpts {
 }
 
 const imgCache = new Map<string, Promise<HTMLImageElement>>();
-async function img(blobId: string) {
+export async function img(blobId: string) {
   let p = imgCache.get(blobId);
   if (!p) {
     p = blobUrl(blobId).then((u) => loadImageElement(u!));
@@ -66,7 +66,7 @@ export function renderAuto(...args: Parameters<typeof renderLayout>): Promise<HT
 }
 
 /** Draw frames (with their pictures) using the context's current transform, in wall inches. */
-async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['items'], frames: Map<string, Frame>, pictures: Map<string, Picture>, s: number) {
+export async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['items'], frames: Map<string, Frame>, pictures: Map<string, Picture>, s: number, shadow = true) {
   for (const it of items) {
     const f = frames.get(it.frameId)!;
     ctx.save();
@@ -77,6 +77,7 @@ async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['items'], 
     f.outline.forEach((p, i) => (i ? outline.lineTo(p.x, p.y) : outline.moveTo(p.x, p.y)));
     outline.closePath();
     // Soft shadow under the frame.
+    if (shadow) {
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.35)';
     ctx.shadowBlur = 0.6 * s;
@@ -84,6 +85,7 @@ async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['items'], 
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fill(outline);
     ctx.restore();
+    }
     ctx.save();
     ctx.clip(outline);
     ctx.drawImage(await img(f.imageBlobId), -f.padX, -f.padY, f.widthIn + f.padX * 2, f.heightIn + f.padY * 2);

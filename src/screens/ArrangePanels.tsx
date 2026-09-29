@@ -16,6 +16,7 @@ import type { Frame, Layout, OpeningFill, PlacedItem, Project, WallPaint, Zone }
 import { fmtLen, fmtSize } from '../lib/units';
 import { FineRotate } from './FrameEditor';
 import type { ArrangeCtx, PaintTool } from './Arrange';
+import { ArButton } from './View3D';
 
 export type PanelKind = 'inventory' | 'autofill' | 'paint' | 'zones' | 'wall' | 'layouts' | 'export';
 
@@ -746,6 +747,10 @@ function ExportPanel({ ctx }: { ctx: ArrangeCtx }) {
       <Segmented value={String(size) as '1600'} onChange={(v) => setSize(+v)} options={[{ value: '1600', label: 'Medium' }, { value: '2400', label: 'Large' }, { value: '4000', label: 'Max' }] as { value: '1600'; label: string }[]} />
       <button class="btn" disabled={busy} onClick={make}><Icon name="eye" /> Preview</button>
       {preview && <img src={preview} style={{ width: '100%', borderRadius: 12 }} />}
+      <div class="section-title">See it on your real wall</div>
+      <div class="hint">Opens the arrangement at true size in your iPhone or iPad camera. Or share the AR file and AirDrop it to another iPhone; it opens straight into AR, no app needed. Plain white walls can take a few seconds of slow panning to detect.</div>
+      <div class="row wrap"><ArButton project={ctx.project} layout={ctx.layout} frames={ctx.frames} pictures={ctx.pictures} full /></div>
+      <div class="section-title">Image</div>
       <button class="btn primary" disabled={busy} data-testid="export-share" onClick={async () => { const b = await make(); await shareOrDownload(b, `${ctx.project.name} - ${ctx.layout.name}.png`); }}>
         <Icon name="share" /> {busy ? 'Rendering…' : 'Share or save image'}
       </button>
