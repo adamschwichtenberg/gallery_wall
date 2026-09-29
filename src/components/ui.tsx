@@ -156,3 +156,17 @@ export function Steps({ steps, current, onGo, maxReached }: { steps: string[]; c
 export function confirmAsync(msg: string) {
   return Promise.resolve(window.confirm(msg));
 }
+
+/** Natural pixel size of an image URL (undefined until loaded). */
+export function useImgSize(url: string | undefined): { w: number; h: number } | undefined {
+  const [size, setSize] = useState<{ w: number; h: number; url: string } | undefined>();
+  useEffect(() => {
+    if (!url) return;
+    let alive = true;
+    const img = new Image();
+    img.onload = () => alive && setSize({ w: img.naturalWidth, h: img.naturalHeight, url });
+    img.src = url;
+    return () => { alive = false; };
+  }, [url]);
+  return size && size.url === url ? { w: size.w, h: size.h } : undefined;
+}

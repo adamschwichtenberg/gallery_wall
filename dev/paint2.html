@@ -1,0 +1,25 @@
+<!doctype html><html><body style="background:#222;margin:0"><div id="out"></div><script type="module">
+import { loadPhoto, canvasToImg, imgToCanvas, visibleExtent } from '../src/lib/imaging';
+import { detectWallMask, upsampleMask, repaint, maskPreview } from '../src/lib/recolor';
+import { maskOptionsFor } from '../src/lib/paintwall';
+const blob = await (await fetch('./samples/3.jpg')).blob();
+const c = await loadPhoto(blob, 2400);
+const src = canvasToImg(c);
+const k = c.width / 1500;
+// Pinned: corner to a point 64" along, ceiling to floor (96").
+const quad = [[90,560],[900,240],[900,1960],[105,1440]].map(([x,y])=>({x:x*k,y:y*k}));
+const ext = visibleExtent(src.width, src.height, quad, 64, 96, 1);
+const wall = { quad, refW: 64, refH: 96, bottomAboveFloor: 0, ...ext };
+const out = document.getElementById('out');
+window.results = {};
+for (const t of [0.3, 0.6, 0.9]) {
+  const t0 = performance.now();
+  const m = detectWallMask(src, maskOptionsFor(wall, [], { tolerance: t, hex: '', name: '', strength: 1 }, src.width, src.height));
+  const full = upsampleMask(m, src.width, src.height);
+  const p = repaint(src, full, '#9aa38f', 1);
+  window.results[t] = { totalMs: Math.round(performance.now() - t0) };
+  const cv = imgToCanvas(p); cv.style.width = '300px'; out.append(cv);
+  const pv = maskPreview(m); pv.style.width = '300px'; pv.style.background='#000'; out.append(pv);
+}
+window.done = true;
+</script></body></html>

@@ -1,7 +1,9 @@
 // Draw a layout to a canvas (export images and project thumbnails).
 import { blobUrl } from './db';
 import { footprint, unionBox } from './arrange';
+import { applyH, invert3, multiply3 } from './geometry';
 import { loadImageElement, makeCanvas, toBlob } from './imaging';
+import { localScale, scaleMat, wallToSource } from './projection';
 import type { Frame, Layout, Picture, Project } from './types';
 
 export interface RenderOpts {
@@ -48,6 +50,23 @@ export async function renderLayout(project: Project, layout: Layout, frames: Map
     ctx.drawImage(w, wall.x0, wall.y0, wall.x1 - wall.x0, wall.y1 - wall.y0);
   }
 
+  await drawItems(ctx, items, frames, pictures, s);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return c;
+}
+
+export async function renderToBlob(...args: Parameters<typeof renderLayout>): Promise<Blob> {
+  return toBlob(await renderAuto(...args), 'image/png');
+}
+
+/** Render in whichever view the project is using (photo perspective or straightened). */
+export function renderAuto(...args: Parameters<typeof renderLayout>): Promise<HTMLCanvasElement> {
+  const [project] = args;
+  return project.wall && project.settings.viewMode !== 'straight' ? renderPhotoLayout(...args) : renderLayout(...args);
+}
+
+/** Draw frames (with their pictures) using the context's current transform, in wall inches. */
+async function drawItems(ctx: CanvasRenderingContext2D, items: Layout['items'], frames: Map<string, Frame>, pictures: Map<string, Picture>, s: number) {
   for (const it of items) {
     const f = frames.get(it.frameId)!;
     ctx.save();
@@ -96,10 +115,58 @@ export async function renderLayout(project: Project, layout: Layout, frames: Map
     }
     ctx.restore();
   }
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  return c;
 }
 
-export async function renderToBlob(...args: Parameters<typeof renderLayout>): Promise<Blob> {
-  return toBlob(await renderLayout(...args), 'image/png');
+/**
+ * Photo mode: the frames are drawn flat on a wall-space layer, then projected into the photo
+ * through the wall's perspective (inverse mapping with bilinear sampling and alpha blending).
+ */
+export async function renderPhotoLayout(project: Project, layout: Layout, frames: Map<string, Frame>, pictures: Map<string, Picture>, o: RenderOpts): Promise<HTMLCanvasElement> {
+  const wall = project.wall!;
+  const srcId = o.paint && project.settings.showPaint && wall.paintedSrcBlobId ? wall.paintedSrcBlobId : wall.sourceBlobId;
+  const base = await img(srcId);
+  const k = Math.min(1, o.maxSide / Math.max(base.naturalWidth, base.naturalHeight));
+  const out = makeCanvas(base.naturalWidth * k, base.naturalHeight * k);
+  const octx = out.getContext('2d')!;
+  octx.drawImage(base, 0, 0, out.width, out.height);
+  const items = layout.items.filter((i) => frames.has(i.frameId));
+  const u = unionBox(items.map((i) => footprint(i, frames.get(i.frameId)!)));
+  if (!u) return out;
+  // Wall inches → output pixels.
+  const H = multiply3(scaleMat(k), wallToSource(wall));
+  const pad = 2;
+  const lx0 = u.x - pad, ly0 = u.y - pad, lw = u.w + pad * 2, lh = u.h + pad * 2;
+  const ppi = Math.min(3000 / Math.max(lw, lh), Math.max(8, localScale(H, { x: u.x + u.w / 2, y: u.y + u.h / 2 }) * 1.5));
+  const layer = makeCanvas(lw * ppi, lh * ppi);
+  const lctx = layer.getContext('2d')!;
+  lctx.setTransform(ppi, 0, 0, ppi, -lx0 * ppi, -ly0 * ppi);
+  await drawItems(lctx, items, frames, pictures, ppi);
+  const L = lctx.getImageData(0, 0, layer.width, layer.height);
+  // Bounding box of the layer in the output.
+  const corners = [[lx0, ly0], [lx0 + lw, ly0], [lx0 + lw, ly0 + lh], [lx0, ly0 + lh]].map(([x, y]) => applyH(H, x, y));
+  const bx0 = Math.max(0, Math.floor(Math.min(...corners.map((p) => p.x)))), bx1 = Math.min(out.width, Math.ceil(Math.max(...corners.map((p) => p.x))));
+  const by0 = Math.max(0, Math.floor(Math.min(...corners.map((p) => p.y)))), by1 = Math.min(out.height, Math.ceil(Math.max(...corners.map((p) => p.y))));
+  if (bx1 <= bx0 || by1 <= by0) return out;
+  const O = octx.getImageData(bx0, by0, bx1 - bx0, by1 - by0);
+  const Hi = invert3(H);
+  const LW = layer.width, LH = layer.height, ld = L.data, od = O.data;
+  for (let y = 0; y < O.height; y++) {
+    for (let x = 0; x < O.width; x++) {
+      const p = applyH(Hi, bx0 + x + 0.5, by0 + y + 0.5);
+      const sx = (p.x - lx0) * ppi - 0.5, sy = (p.y - ly0) * ppi - 0.5;
+      if (sx < 0 || sy < 0 || sx >= LW - 1 || sy >= LH - 1) continue;
+      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * LW + x0) * 4, i10 = i00 + 4, i01 = i00 + LW * 4, i11 = i01 + 4;
+      const a = (ld[i00 + 3] * (1 - fx) + ld[i10 + 3] * fx) * (1 - fy) + (ld[i01 + 3] * (1 - fx) + ld[i11 + 3] * fx) * fy;
+      if (a <= 0) continue;
+      const o = (y * O.width + x) * 4, al = a / 255;
+      for (let c = 0; c < 3; c++) {
+        // Premultiply while interpolating so edges don't pick up dark fringes.
+        const v = ((ld[i00 + c] * ld[i00 + 3] * (1 - fx) + ld[i10 + c] * ld[i10 + 3] * fx) * (1 - fy) + (ld[i01 + c] * ld[i01 + 3] * (1 - fx) + ld[i11 + c] * ld[i11 + 3] * fx) * fy) / Math.max(1, a);
+        od[o + c] = od[o + c] * (1 - al) + v * al;
+      }
+    }
+  }
+  octx.putImageData(O, bx0, by0);
+  return out;
 }

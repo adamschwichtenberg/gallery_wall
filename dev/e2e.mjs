@@ -80,13 +80,13 @@ await step('wall', async () => {
   await p.getByTestId('library-input').setInputFiles('dev/samples/3.jpg');
   await p.waitForSelector('text=Pin a rectangle you know');
   await p.waitForTimeout(400);
-  const quad = [[65, 540], [900, 225], [900, 1967], [100, 1440]];
+  const quad = [[90, 560], [900, 240], [900, 1960], [105, 1440]];
   for (let i = 0; i < 4; i++) await dragImagePoint(`pin-${i}`, quad[i][0], quad[i][1]);
   await typeLen('Width', '64');
   await typeLen('Height', '96');
   await shot('07-wall-pins');
   await p.getByTestId('next').click();
-  await p.waitForSelector('text=Looks right?');
+  await p.waitForSelector('text=How do you want to work?');
   await p.waitForTimeout(400);
   await shot('08-wall-review');
   await p.getByTestId('save').click();
@@ -138,11 +138,33 @@ await step('swap picture', async () => {
 
 await step('paint', async () => {
   await p.getByTestId('tool-paint').click();
+  await p.waitForSelector('.mask-overlay', { timeout: 30000 });
+  await shot('14a-paint-area');
   await p.locator('.swatch', { hasText: 'Evergreen Fog' }).click();
+  await p.waitForTimeout(600);
   await p.waitForFunction(() => !document.querySelector('.panel-body .spinner'), null, { timeout: 30000 });
-  await p.waitForTimeout(800);
+  await p.waitForTimeout(500);
+  await shot('14b-paint');
+  // Erase a stroke across the smoke detector area, then check it re-renders.
+  await p.getByTestId('paint-tool-erase').click();
+  const cv = await p.getByTestId('canvas').boundingBox();
+  await p.mouse.move(cv.x + cv.width * 0.55, cv.y + cv.height * 0.3);
+  await p.mouse.down();
+  await p.mouse.move(cv.x + cv.width * 0.6, cv.y + cv.height * 0.35, { steps: 6 });
+  await p.mouse.up();
+  await p.waitForTimeout(600);
+  await p.waitForFunction(() => !document.querySelector('.panel-body .spinner'), null, { timeout: 30000 });
+  await shot('14c-paint-erased');
+  await p.getByTestId('paint-tool-none').click();
   await p.keyboard.press('Escape');
-  await shot('14-paint');
+});
+
+await step('straight-on toggle', async () => {
+  await p.getByTestId('mode-straight').click();
+  await p.waitForTimeout(800);
+  await shot('14d-straight');
+  await p.getByTestId('mode-photo').click();
+  await p.waitForTimeout(800);
 });
 
 await step('export', async () => {
@@ -152,26 +174,11 @@ await step('export', async () => {
   await shot('15-export');
 });
 
-await step('drag picture from tray onto a frame', async () => {
+await step('tray has frames only', async () => {
   await p.getByTestId('tool-inventory').click();
-  await p.locator('.segmented button', { hasText: 'Pictures' }).click();
-  const card = await p.locator('[data-testid=panel-inventory] .tray-card').first().boundingBox();
-  const items = p.getByTestId('placed-item');
-  let target = null;
-  for (let i = 0; i < await items.count(); i++) {
-    const bb = await items.nth(i).boundingBox();
-    if (!target || bb.width * bb.height > target.width * target.height) target = bb;
-  }
-  await p.mouse.move(card.x + 40, card.y + 40);
-  await p.mouse.down();
-  await p.mouse.move(card.x + 120, card.y + 40, { steps: 5 });
-  await p.mouse.move(target.x + target.width * 0.3, target.y + target.height * 0.3, { steps: 10 });
-  await p.mouse.up();
-  await p.waitForTimeout(400);
-  const fills = await p.evaluate(() => document.querySelectorAll('.item .fill').length);
-  console.log('   filled openings on wall:', fills);
-  if (!fills) throw new Error('drop did not fill an opening');
-  await shot('15b-dropped');
+  const hasPicturesTab = await p.locator('[data-testid=panel-inventory] .segmented button', { hasText: 'Pictures' }).count();
+  if (hasPicturesTab) throw new Error('tray still shows pictures');
+  await shot('15b-tray');
 });
 
 await step('persistence', async () => {

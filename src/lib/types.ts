@@ -116,11 +116,23 @@ export interface Zone {
   noPaint: boolean;
 }
 
+export interface PaintStroke {
+  mode: 'add' | 'erase';
+  /** Brush radius as a fraction of the source photo's width. */
+  r: number;
+  /** Points normalised to the source photo (0..1 of width / height). */
+  pts: Pt[];
+}
+
 export interface WallPaint {
   hex: string;
   name: string;
   strength: number; // 0..1
   tolerance: number; // 0..1 mask similarity
+  /** Extra "tap to fill" seed points, normalised to the source photo. */
+  taps?: Pt[];
+  /** Manual brush / eraser touch-ups, applied after automatic detection. */
+  strokes?: PaintStroke[];
 }
 
 export interface Wall {
@@ -129,6 +141,8 @@ export interface Wall {
   refW: number; // inches, width of the pinned rectangle
   refH: number;
   bottomAboveFloor: number; // inches from the floor to the bottom edge of the pinned rectangle
+  /** Floor-to-ceiling height, if known. Keeps wall paint off the ceiling. */
+  ceilingHeight?: number;
   imageBlobId: string; // straightened wall image
   /** Extent of the straightened image in wall inches (origin = pinned rectangle's top-left). */
   x0: number;
@@ -136,7 +150,10 @@ export interface Wall {
   x1: number;
   y1: number;
   paint?: WallPaint;
+  /** Painted version of the straightened image. */
   paintedBlobId?: string;
+  /** Painted version of the original photo. */
+  paintedSrcBlobId?: string;
 }
 
 export interface ProjectSettings {
@@ -146,6 +163,8 @@ export interface ProjectSettings {
   snap: boolean;
   showZones: boolean;
   showPaint: boolean;
+  /** 'photo': work on the photo as taken (frames follow its perspective). 'straight': squared-up wall. */
+  viewMode?: 'photo' | 'straight';
 }
 
 export interface Project {

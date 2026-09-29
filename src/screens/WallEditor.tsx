@@ -2,7 +2,8 @@ import { useEffect, useState } from 'preact/hooks';
 import { CornerPins } from '../components/CornerPins';
 import { Icon } from '../components/Icon';
 import { PhotoStage } from '../components/PhotoStage';
-import { Busy, LengthInput, PhotoSource, Steps, Toggle } from '../components/ui';
+import { Busy, LengthInput, PhotoSource, Segmented, Steps, Toggle } from '../components/ui';
+import { applyH, homography } from '../lib/geometry';
 import { deleteBlob, putBlob } from '../lib/db';
 import { imgToCanvas, pxPerUnitFor, visibleExtent, warp, type Img } from '../lib/imaging';
 import { loadSource, loadStoredSource, nextFrame, storeCanvas } from '../lib/pipeline';
@@ -24,6 +25,8 @@ export function WallEditor({ projectId }: { projectId: string }) {
   const [refW, setRefW] = useState(wall?.refW ?? 0);
   const [refH, setRefH] = useState(wall?.refH ?? 0);
   const [bottom, setBottom] = useState(wall?.bottomAboveFloor ?? 0);
+  const [ceiling, setCeiling] = useState(wall?.ceilingHeight ?? 0);
+  const [review, setReview] = useState<'photo' | 'straight'>(project?.settings.viewMode === 'straight' ? 'straight' : 'photo');
   const [extend, setExtend] = useState(true);
   const [result, setResult] = useState<{ canvas: HTMLCanvasElement; url: string; x0: number; y0: number; x1: number; y1: number } | null>(null);
 
@@ -99,10 +102,13 @@ export function WallEditor({ projectId }: { projectId: string }) {
       }
       const next: Wall = {
         sourceBlobId, quad, refW, refH, bottomAboveFloor: bottom, imageBlobId,
+        ceilingHeight: ceiling > 0 ? ceiling : undefined,
         x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1,
         paint: wall?.paint,
       };
-      await saveProject({ ...p, wall: next });
+      // Old paint results no longer line up with new pins; the paint panel re-renders them.
+      if (wall && JSON.stringify(wall.quad) !== JSON.stringify(quad)) { next.paintedBlobId = undefined; next.paintedSrcBlobId = undefined; }
+      await saveProject({ ...p, wall: next, settings: { ...p.settings, viewMode: review } });
       toast('Wall saved');
       close();
     } finally {
@@ -136,7 +142,11 @@ export function WallEditor({ projectId }: { projectId: string }) {
         )}
         {step === 1 && !src && <div class="editor-stage" style={{ display: 'grid', placeItems: 'center' }}><div class="spinner" /></div>}
         {step === 2 && result && (
-          <ReviewImage result={result} refW={refW} refH={refH} floorY={floorY} eye={project?.settings.eyeLevel ?? 57} />
+          review === 'straight' ? (
+            <ReviewImage result={result} refW={refW} refH={refH} floorY={floorY} eye={project?.settings.eyeLevel ?? 57} />
+          ) : src && quad ? (
+            <PhotoReview src={src.url} w={src.img.width} h={src.img.height} quad={quad} refW={refW} refH={refH} floorY={floorY} eye={project?.settings.eyeLevel ?? 57} x0={result.x0} x1={result.x1} />
+          ) : null
         )}
         {step > 0 && (
           <div class="editor-side">
@@ -156,15 +166,21 @@ export function WallEditor({ projectId }: { projectId: string }) {
                   </div>
                   <LengthInput label="Bottom edge height above floor" value={bottom} onChange={setBottom} placeholder="0 if it touches the floor" />
                   <div class="faint small-text">Used for the eye-level line and height readouts. Enter 0 if the bottom pins sit on the floor.</div>
+                  <LengthInput label="Ceiling height (optional)" value={ceiling} onChange={setCeiling} placeholder="floor to ceiling, e.g. 96" />
+                  <div class="faint small-text">Helps the wall-color preview stop at the ceiling line.</div>
                   <Toggle label="Include the rest of the photo" on={extend} onChange={setExtend} />
                 </>
               )}
               {step === 2 && (
                 <>
-                  <h2>Looks right?</h2>
+                  <h2>How do you want to work?</h2>
+                  <Segmented value={review} onChange={setReview} options={[{ value: 'photo', label: 'As photographed' }, { value: 'straight', label: 'Straightened' }]} />
                   <div class="hint">
-                    The wall should now look like you’re standing straight in front of it. The yellow line is eye level ({fmtLen(project?.settings.eyeLevel ?? 57, units)} from the floor). If it looks skewed, go back and nudge the pins.
+                    {review === 'photo'
+                      ? <><b>As photographed</b> keeps your photo exactly as taken. Frames follow the wall’s perspective and get smaller as you slide them away from the camera.</>
+                      : <><b>Straightened</b> squares the wall up as if you were standing directly in front of it, which is handy for precise spacing.</>}
                   </div>
+                  <div class="hint">You can switch any time with the <b>Photo / Straight-on</b> toggle at the top of the wall screen. The yellow line is eye level ({fmtLen(project?.settings.eyeLevel ?? 57, units)} from the floor); if it looks off, go back and nudge the pins.</div>
                 </>
               )}
             </div>
@@ -199,6 +215,21 @@ function ReviewImage({ result, refW, refH, floorY, eye }: { result: { url: strin
           <rect x={X(0)} y={Y(0)} width={refW * ppi} height={refH * ppi} fill="none" stroke="rgba(143,184,255,0.9)" stroke-width={api.px(1.5)} />
           <line x1={0} x2={result.canvas.width} y1={Y(floorY - eye)} y2={Y(floorY - eye)} class="eye-line" style={{ strokeWidth: api.px(2) }} stroke-dasharray={`${api.px(10)} ${api.px(6)}`} />
           <line x1={0} x2={result.canvas.width} y1={Y(floorY)} y2={Y(floorY)} stroke="rgba(255,255,255,0.5)" stroke-width={api.px(1)} />
+        </>
+      )}
+    </PhotoStage>
+  );
+}
+
+function PhotoReview({ src, w, h, quad, refW, refH, floorY, eye, x0, x1 }: { src: string; w: number; h: number; quad: Quad; refW: number; refH: number; floorY: number; eye: number; x0: number; x1: number }) {
+  const H = homography([{ x: 0, y: 0 }, { x: refW, y: 0 }, { x: refW, y: refH }, { x: 0, y: refH }], quad);
+  const a = applyH(H, x0, floorY - eye), b = applyH(H, x1, floorY - eye);
+  return (
+    <PhotoStage src={src} imgW={w} imgH={h}>
+      {(api) => (
+        <>
+          <polygon points={quad.map((p) => `${p.x},${p.y}`).join(' ')} fill="rgba(143,184,255,0.12)" stroke="rgba(143,184,255,0.9)" stroke-width={api.px(1.5)} />
+          <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} class="eye-line" style={{ strokeWidth: api.px(2) }} stroke-dasharray={`${api.px(10)} ${api.px(6)}`} />
         </>
       )}
     </PhotoStage>

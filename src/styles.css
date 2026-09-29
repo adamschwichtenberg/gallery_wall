@@ -295,3 +295,7 @@ input[type='range']::-moz-range-thumb { width: 26px; height: 26px; border: 0; bo
 
 .lbl-sm { font-size: 14px; }
 @media (max-width: 1000px) { .hud-bottom .lbl-sm { display: none; } .hud-bottom .btn { padding: 0; width: 44px; } }
+
+.world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; z-index: 2; }
+.mask-overlay { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; z-index: 1; image-rendering: auto; }
+.canvas.painting { cursor: crosshair; }

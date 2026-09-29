@@ -2,14 +2,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { FrameArt } from '../components/FrameArt';
 import { Icon } from '../components/Icon';
-import { useBlobUrl } from '../components/ui';
+import { useBlobUrl, useImgSize } from '../components/ui';
 import { footprint, snap, suggestFill, unionBox, type Box, type GapMark, type Guide } from '../lib/arrange';
 import { deleteBlob, uid } from '../lib/db';
-import { rectsOverlap } from '../lib/geometry';
+import { applyH, rectsOverlap, type Mat3 } from '../lib/geometry';
+import { cssMatrix, invert3, localScale, multiply3, scaleMat, viewMat, wallToSource, wallToStraight } from '../lib/projection';
 import { storeCanvas } from '../lib/pipeline';
-import { renderLayout } from '../lib/render';
+import { renderAuto } from '../lib/render';
 import { activeLayout, getProject, navigate, openModal, saveProject, useStore } from '../lib/store';
-import type { Frame, Layout, OpeningFill, Picture, PlacedItem, Project, Pt, Zone } from '../lib/types';
+import type { Frame, Layout, OpeningFill, PaintStroke, Picture, PlacedItem, Project, Pt, Zone } from '../lib/types';
 import { fmtLen } from '../lib/units';
 import { ArrangePanels, type PanelKind } from './ArrangePanels';
 
@@ -38,7 +39,18 @@ export interface ArrangeCtx {
   setPanel: (p: PanelKind | null) => void;
   units: 'in' | 'cm';
   clientToWall: (cx: number, cy: number) => Pt;
+  mode: 'photo' | 'straight';
+  paintTool: PaintTool;
+  setPaintTool: (t: PaintTool) => void;
+  brushPx: number;
+  setBrushPx: (n: number) => void;
+  maskOverlay: MaskOverlay | null;
+  setMaskOverlay: (m: MaskOverlay | null) => void;
 }
+
+export type PaintTool = 'none' | 'brush' | 'erase' | 'wand';
+/** A highlight image in source-photo space (mask pixels = source pixels × scale). */
+export interface MaskOverlay { url: string; w: number; h: number; scale: number }
 
 export interface Preview { items: { frameId: string; x: number; y: number }[]; replace: boolean }
 
@@ -98,16 +110,32 @@ function ArrangeInner({ id }: { id: string }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [reposition, setReposition] = useState(false);
   const [multi, setMulti] = useState(false);
+  const [paintTool, setPaintTool] = useState<PaintTool>('none');
+  const [brushPx, setBrushPx] = useState(36);
+  const [maskOverlay, setMaskOverlay] = useState<MaskOverlay | null>(null);
+  const [strokeDraft, setStrokeDraft] = useState<Pt[] | null>(null);
   const [, bump] = useState(0);
   const host = useRef<HTMLDivElement>(null);
   const hist = useRef<{ past: Snapshot[]; future: Snapshot[] }>({ past: [], future: [] });
 
-  const wallUrl = useBlobUrl(project?.wall?.imageBlobId);
-  const paintedUrl = useBlobUrl(project?.wall?.paintedBlobId);
+  const wall = project.wall;
+  const st = project.settings;
+  const mode: 'photo' | 'straight' = wall && st.viewMode !== 'straight' ? 'photo' : 'straight';
+  const straightUrl = useBlobUrl(wall?.imageBlobId);
+  const paintedUrl = useBlobUrl(wall?.paintedBlobId);
+  const srcUrl = useBlobUrl(wall?.sourceBlobId);
+  const paintedSrcUrl = useBlobUrl(wall?.paintedSrcBlobId);
+  const straightSize = useImgSize(straightUrl);
+  const srcSize = useImgSize(srcUrl);
 
   const layout = activeLayout(project);
   const geom = wallGeometry(project);
-  const st = project.settings;
+
+  // ---- projection: wall inches → image pixels → screen ---------------------------------
+  const baseUrl = !wall ? undefined : mode === 'photo' ? (st.showPaint && paintedSrcUrl) || srcUrl : (st.showPaint && paintedUrl) || straightUrl;
+  const baseSize = !wall ? { w: 144, h: 96 } : mode === 'photo' ? srcSize : straightSize;
+  const H: Mat3 | null = !wall ? scaleMat(1) : !baseSize ? null : mode === 'photo' ? wallToSource(wall) : wallToStraight(wall, baseSize.w);
+  const Hsrc: Mat3 | null = wall ? wallToSource(wall) : null;
 
   // ---- history -------------------------------------------------------------------
   const snapOf = (p: Project): Snapshot => ({ layouts: p.layouts, activeLayoutId: p.activeLayoutId, zones: p.zones, settings: p.settings });
@@ -154,18 +182,26 @@ function ArrangeInner({ id }: { id: string }) {
   };
   const fit = () => {
     const el = host.current;
-    if (!el) return;
+    if (!el || !H || !baseSize) return;
     const pad = sidePad();
-    const W = el.clientWidth - pad.l - pad.r, H = el.clientHeight - 170;
-    // Frame the wall area you hang on (plus the floor line), not the whole photo.
-    const h = geom.hang;
-    const m = Math.max(h.x1 - h.x0, geom.floorY - h.y0) * 0.06;
-    const fx0 = h.x0 - m, fy0 = h.y0 - m, fx1 = h.x1 + m, fy1 = geom.floorY + m;
-    const bw = fx1 - fx0, bh = fy1 - fy0;
-    const s = Math.min(W / bw, H / bh);
-    setView({ s, tx: pad.l + (W - bw * s) / 2 - fx0 * s, ty: 84 + (H - bh * s) / 2 - fy0 * s });
+    const W = el.clientWidth - pad.l - pad.r, Hh = el.clientHeight - 170;
+    let bx0: number, by0: number, bx1: number, by1: number;
+    if (mode === 'photo') {
+      // Show the whole photo as it was taken.
+      bx0 = 0; by0 = 0; bx1 = baseSize.w; by1 = baseSize.h;
+    } else {
+      // Frame the wall area you hang on (plus the floor line), not the whole photo.
+      const h = geom.hang;
+      const m = Math.max(h.x1 - h.x0, geom.floorY - h.y0) * 0.06;
+      const pts = [[h.x0 - m, h.y0 - m], [h.x1 + m, h.y0 - m], [h.x1 + m, geom.floorY + m], [h.x0 - m, geom.floorY + m]].map(([x, y]) => applyH(H, x, y));
+      bx0 = Math.min(...pts.map((p) => p.x)); by0 = Math.min(...pts.map((p) => p.y));
+      bx1 = Math.max(...pts.map((p) => p.x)); by1 = Math.max(...pts.map((p) => p.y));
+    }
+    const bw = bx1 - bx0, bh = by1 - by0;
+    const s = Math.min(W / bw, Hh / bh);
+    setView({ s, tx: pad.l + (W - bw * s) / 2 - bx0 * s, ty: 84 + (Hh - bh * s) / 2 - by0 * s });
   };
-  useLayoutEffect(fit, [project.wall?.imageBlobId]);
+  useLayoutEffect(fit, [wall?.imageBlobId, mode, baseSize?.w, baseSize?.h]);
   useEffect(() => {
     let w = window.innerWidth, h = window.innerHeight;
     const onResize = () => {
@@ -177,11 +213,17 @@ function ArrangeInner({ id }: { id: string }) {
     return () => window.removeEventListener('resize', onResize);
   });
 
+  const M: Mat3 | null = H ? multiply3(viewMat(view), H) : null;
+  const Minv: Mat3 | null = M ? invert3(M) : null;
+  const MinvRef = useRef(Minv);
+  MinvRef.current = Minv;
+  const localToWall = (p: Pt): Pt => (MinvRef.current ? applyH(MinvRef.current, p.x, p.y) : p);
   const toWall = (cx: number, cy: number): Pt => {
     const r = host.current!.getBoundingClientRect();
-    const v = viewRef.current;
-    return { x: (cx - r.left - v.tx) / v.s, y: (cy - r.top - v.ty) / v.s };
+    return localToWall({ x: cx - r.left, y: cy - r.top });
   };
+  /** Screen pixels per inch around a wall point. */
+  const pxPerIn = (p: Pt) => (M ? Math.max(0.05, localScale(M, p)) : 1);
 
   // ---- placement helpers ------------------------------------------------------------
   const boxes = (items: PlacedItem[]) => items.filter((i) => frames.has(i.frameId)).map((i) => footprint(i, frames.get(i.frameId)!));
@@ -227,7 +269,8 @@ function ArrangeInner({ id }: { id: string }) {
     | { kind: 'pinch'; start: View; d0: number; c0: Pt }
     | { kind: 'eye'; start: number; p0: Pt; before: Snapshot }
     | { kind: 'zone'; zoneId: string; mode: 'move' | 'resize'; start: Zone; p0: Pt; before: Snapshot }
-    | { kind: 'picture'; itemId: string; openingId: string; start: OpeningFill; p0: Pt; before: Snapshot };
+    | { kind: 'picture'; itemId: string; openingId: string; start: OpeningFill; p0: Pt; before: Snapshot }
+    | { kind: 'stroke'; pts: Pt[] };
   const drag = useRef<Drag | null>(null);
   const pointers = useRef(new Map<number, Pt>());
 
@@ -250,6 +293,11 @@ function ArrangeInner({ id }: { id: string }) {
     pointers.current.set(e.pointerId, local(e));
     host.current!.setPointerCapture(e.pointerId);
     if (startPinchIfTwo()) return;
+    if (panel === 'paint' && paintTool !== 'none' && wall) {
+      drag.current = { kind: 'stroke', pts: [local(e)] };
+      setStrokeDraft([local(e)]);
+      return;
+    }
     drag.current = { kind: 'pan', start: viewRef.current, p0: local(e), moved: false };
   };
 
@@ -283,7 +331,6 @@ function ArrangeInner({ id }: { id: string }) {
     const d = drag.current;
     if (!d) return;
     const p = local(e);
-    const v = viewRef.current;
     if (d.kind === 'pinch') {
       if (pointers.current.size < 2) return;
       const [a, b] = [...pointers.current.values()];
@@ -299,14 +346,20 @@ function ArrangeInner({ id }: { id: string }) {
       if (d.moved) setView({ ...d.start, tx: d.start.tx + p.x - d.p0.x, ty: d.start.ty + p.y - d.p0.y });
       return;
     }
+    const w0 = localToWall('p0' in d ? d.p0 : p), w1 = localToWall(p);
+    if (d.kind === 'stroke') {
+      d.pts.push(p);
+      setStrokeDraft([...d.pts]);
+      return;
+    }
     if (d.kind === 'eye') {
-      const dy = (p.y - d.p0.y) / v.s;
+      const dy = w1.y - w0.y;
       const eye = Math.max(20, Math.min(90, Math.round((d.start - dy) * 4) / 4));
       live((pr) => ({ ...pr, settings: { ...pr.settings, eyeLevel: eye } }));
       return;
     }
     if (d.kind === 'zone') {
-      const dx = (p.x - d.p0.x) / v.s, dy = (p.y - d.p0.y) / v.s;
+      const dx = w1.x - w0.x, dy = w1.y - w0.y;
       const z = d.mode === 'move' ? { ...d.start, x: round(d.start.x + dx), y: round(d.start.y + dy) } : { ...d.start, w: Math.max(1, round(d.start.w + dx)), h: Math.max(1, round(d.start.h + dy)) };
       live((pr) => ({ ...pr, zones: pr.zones.map((x) => (x.id === z.id ? z : x)) }));
       return;
@@ -314,7 +367,7 @@ function ArrangeInner({ id }: { id: string }) {
     if (d.kind === 'picture') {
       const item = layout.items.find((i) => i.id === d.itemId)!;
       const op = frames.get(item.frameId)!.openings.find((o) => o.id === d.openingId)!;
-      const dx = (p.x - d.p0.x) / v.s / op.w, dy = (p.y - d.p0.y) / v.s / op.h;
+      const dx = (w1.x - w0.x) / op.w, dy = (w1.y - w0.y) / op.h;
       const fill = { ...d.start, ox: clamp(d.start.ox + dx, -1, 1), oy: clamp(d.start.oy + dy, -1, 1) };
       live((pr) => withLayout(pr, (l) => ({ ...l, items: l.items.map((i) => (i.id === item.id ? { ...i, fills: { ...i.fills, [d.openingId]: fill } } : i)) })));
       return;
@@ -323,7 +376,7 @@ function ArrangeInner({ id }: { id: string }) {
       if (!d.moved && Math.hypot(p.x - d.p0.x, p.y - d.p0.y) < 5) return;
       d.moved = true;
       if (!d.ids.length) return;
-      let dx = (p.x - d.p0.x) / v.s, dy = (p.y - d.p0.y) / v.s;
+      let dx = w1.x - w0.x, dy = w1.y - w0.y;
       const moving = d.ids.map((iid) => {
         const it = layout.items.find((i) => i.id === iid)!;
         const s0 = d.start.get(iid)!;
@@ -334,7 +387,7 @@ function ArrangeInner({ id }: { id: string }) {
       let sy = 0;
       if (st.snap && !e.altKey) {
         const others = boxes(layout.items.filter((i) => !d.ids.includes(i.id)));
-        const r = snap(u, others, { gap: st.gap, tol: 10 / v.s, xLines: [geom.centerX], yLines: st.showEyeLevel ? [geom.eyeY] : [] });
+        const r = snap(u, others, { gap: st.gap, tol: 10 / pxPerIn({ x: u.x + u.w / 2, y: u.y + u.h / 2 }), xLines: [geom.centerX], yLines: st.showEyeLevel ? [geom.eyeY] : [] });
         dx += r.dx;
         dy += r.dy;
         sy = r.dy;
@@ -368,6 +421,11 @@ function ArrangeInner({ id }: { id: string }) {
     setGuides({ guides: [], gaps: [] });
     setDragInfo(null);
     if (!d) return;
+    if (d.kind === 'stroke') {
+      finishStroke(d.pts);
+      setStrokeDraft(null);
+      return;
+    }
     if (d.kind === 'pan' && !d.moved) {
       if (!multi) setSelection([]);
       setSelOpening(null);
@@ -392,10 +450,37 @@ function ArrangeInner({ id }: { id: string }) {
     bump((n) => n + 1);
   };
 
+  /** Convert a finger stroke to photo coordinates and store it as a paint touch-up. */
+  const finishStroke = (pts: Pt[]) => {
+    if (!wall || !Hsrc || !srcSize || !M) return;
+    const toSrc = (p: Pt) => { const wp = localToWall(p); return applyH(Hsrc, wp.x, wp.y); };
+    const srcPts = pts.map(toSrc);
+    const cur = getProject(id)!;
+    const paint = cur.wall!.paint ?? { hex: '', name: '', strength: 1, tolerance: 0.6 };
+    let next = paint;
+    if (paintTool === 'wand' || pts.length < 3) {
+      if (paintTool !== 'wand') return;
+      const q = srcPts[srcPts.length - 1];
+      next = { ...paint, taps: [...(paint.taps ?? []), { x: q.x / srcSize.w, y: q.y / srcSize.h }] };
+    } else {
+      // Brush radius: screen pixels → photo pixels at the stroke's start.
+      const srcToScreen = multiply3(M, invert3(Hsrc));
+      const k = Math.max(0.01, localScale(srcToScreen, srcPts[0]));
+      const stroke: PaintStroke = {
+        mode: paintTool === 'erase' ? 'erase' : 'add',
+        r: brushPx / 2 / k / srcSize.w,
+        pts: srcPts.filter((_, i) => i % 2 === 0 || i === srcPts.length - 1).map((q) => ({ x: q.x / srcSize.w, y: q.y / srcSize.h })),
+      };
+      next = { ...paint, strokes: [...(paint.strokes ?? []), stroke] };
+    }
+    void saveProject({ ...cur, wall: { ...cur.wall!, paint: next } }, false);
+  };
+
   const clampS = (s: number) => {
     const el = host.current;
-    const base = el ? Math.min(el.clientWidth / (geom.x1 - geom.x0), el.clientHeight / (geom.y1 - geom.y0)) : 5;
-    return Math.max(base * 0.25, Math.min(base * 12, s));
+    const bw = baseSize?.w ?? 144, bh = baseSize?.h ?? 96;
+    const base = el ? Math.min(el.clientWidth / bw, el.clientHeight / bh) : 1;
+    return Math.max(base * 0.25, Math.min(base * 16, s));
   };
 
   useEffect(() => {
@@ -451,7 +536,7 @@ function ArrangeInner({ id }: { id: string }) {
     try {
       const p = getProject(id);
       if (!p?.wall) return;
-      const c = await renderLayout(p, activeLayout(p), frames, pictures, { area: 'wall', maxSide: 640, paint: true });
+      const c = await renderAuto(p, activeLayout(p), frames, pictures, { area: 'wall', maxSide: 640, paint: true });
       const thumb = await storeCanvas(c, 'image/jpeg', 0.8);
       const old = p.thumbBlobId;
       await saveProject({ ...getProject(id)!, thumbBlobId: thumb });
@@ -462,122 +547,162 @@ function ArrangeInner({ id }: { id: string }) {
   };
 
   // ---- render --------------------------------------------------------------------------------
-  const v = view;
-  const X = (x: number) => x * v.s + v.tx;
-  const Y = (y: number) => y * v.s + v.ty;
   const allBoxes = boxes(layout.items);
   const warn = new Set<string>();
   for (let i = 0; i < allBoxes.length; i++) {
     for (let j = i + 1; j < allBoxes.length; j++) if (rectsOverlap(allBoxes[i], allBoxes[j], -0.01)) { warn.add(allBoxes[i].id); warn.add(allBoxes[j].id); }
     if (project.zones.some((z) => z.noHang && rectsOverlap(allBoxes[i], z, -0.01))) warn.add(allBoxes[i].id);
   }
-  const wallImg = st.showPaint && paintedUrl ? paintedUrl : wallUrl;
   const union = unionBox(allBoxes);
 
   const ctx: ArrangeCtx = {
     project, layout, frames, pictures, selection, setSelection, selOpening, setSelOpening, commit, updateLayout, addFrame, placedCount,
     wallGeom: geom, preview, setPreview, reposition, setReposition, fit, panel, setPanel, units, clientToWall: toWall,
+    mode, paintTool, setPaintTool, brushPx, setBrushPx, maskOverlay, setMaskOverlay,
+  };
+
+  const P = (x: number, y: number): Pt => (M ? applyH(M, x, y) : { x, y });
+  const pts = (list: [number, number][]) => list.map(([x, y]) => { const q = P(x, y); return `${q.x},${q.y}`; }).join(' ');
+  // The frames live in a layer laid out at K px per inch, then projected onto the wall.
+  const anchor = union ? { x: union.x + union.w / 2, y: union.y + union.h / 2 } : { x: geom.centerX, y: geom.eyeY };
+  const K = Math.max(0.5, pxPerIn(anchor));
+  const worldTransform = M ? cssMatrix(multiply3(M, scaleMat(1 / K))) : 'none';
+  const maskTransform = M && Hsrc && maskOverlay ? cssMatrix(multiply3(multiply3(M, invert3(Hsrc)), scaleMat(1 / maskOverlay.scale))) : 'none';
+  const painting = panel === 'paint' && paintTool !== 'none';
+  const eyeAt = P(Math.max(geom.x0, geom.hang.x0), geom.eyeY);
+
+  const renderItem = (it: { id?: string; frameId: string; x: number; y: number; rotation?: number; fills?: PlacedItem['fills'] }, ghost: boolean, key: string) => {
+    const f = frames.get(it.frameId);
+    if (!f) return null;
+    const sel = !ghost && !!it.id && selection.includes(it.id);
+    const full = it as PlacedItem;
+    return (
+      <div
+        key={key}
+        data-id={ghost ? undefined : it.id}
+        data-testid={ghost ? undefined : 'placed-item'}
+        class={`item ${sel ? 'selected' : ''} ${ghost ? 'ghost' : ''} ${!ghost && warn.has(it.id!) ? 'warn' : ''}`}
+        style={{ left: (it.x - f.widthIn / 2) * K, top: (it.y - f.heightIn / 2) * K, width: f.widthIn * K, height: f.heightIn * K, transform: `rotate(${it.rotation ?? 0}deg)`, zIndex: ghost ? 4 : sel ? 3 : 2 }}
+        onPointerDown={ghost ? undefined : (e) => onItemDown(full, e as unknown as PointerEvent)}
+      >
+        <FrameArt
+          frame={f} s={K} fills={it.fills} pictures={pictures}
+          selectedOpening={!ghost && selOpening && selOpening.itemId === it.id ? selOpening.openingId : null}
+          showOpenings={sel && selection.length === 1}
+        />
+        {(sel || ghost) && <div class="sel-ring" />}
+      </div>
+    );
   };
 
   return (
     <div class="arrange">
       <div
         ref={host}
-        class="canvas"
+        class={`canvas ${painting ? 'painting' : ''}`}
         data-testid="canvas"
         onPointerDown={onCanvasDown as any}
         onPointerMove={onMove as any}
         onPointerUp={onUp as any}
         onPointerCancel={onUp as any}
       >
-        {project.wall && wallImg ? (
-          <img class="wall-img" src={wallImg} draggable={false} style={{ left: X(geom.x0), top: Y(geom.y0), width: (geom.x1 - geom.x0) * v.s, height: (geom.y1 - geom.y0) * v.s }} />
+        {wall && baseUrl && baseSize ? (
+          <img class="wall-img" src={baseUrl} draggable={false} style={{ left: view.tx, top: view.ty, width: baseSize.w * view.s, height: baseSize.h * view.s }} />
+        ) : !wall ? (
+          <div class="wall-img" style={{ left: view.tx, top: view.ty, width: 144 * view.s, height: 96 * view.s, background: 'linear-gradient(#e9e6df, #d9d5cc)', borderBottom: `${6 * view.s}px solid #f4f2ee` }} />
         ) : (
-          <div class="wall-img" style={{ left: X(geom.x0), top: Y(geom.y0), width: (geom.x1 - geom.x0) * v.s, height: (geom.y1 - geom.y0) * v.s, background: 'linear-gradient(#e9e6df, #d9d5cc)', borderBottom: `${8 * v.s}px solid #f4f2ee` }} />
+          <div class="busy"><div class="spinner" /></div>
+        )}
+
+        {panel === 'paint' && maskOverlay && (
+          <img class="mask-overlay" src={maskOverlay.url} draggable={false} style={{ width: maskOverlay.w, height: maskOverlay.h, transform: maskTransform }} />
         )}
 
         <svg class="overlay-svg" style={{ zIndex: 1 }}>
-          {st.showZones && panel !== 'zones' && project.zones.map((z) => (
-            <g key={z.id}>
-              <rect class={`zone-rect ${!z.noHang ? 'nopaint-only' : ''}`} x={X(z.x)} y={Y(z.y)} width={z.w * v.s} height={z.h * v.s} rx={3} />
-              <text class="svg-label" x={X(z.x) + 5} y={Y(z.y) + 14}>{z.label}</text>
-            </g>
-          ))}
-          {st.showEyeLevel && <line class="eye-line" x1={0} x2="100%" y1={Y(geom.eyeY)} y2={Y(geom.eyeY)} />}
-          {!project.wall && (
-            <text class="svg-label" x={X(geom.centerX)} y={Y(20)} text-anchor="middle" style={{ fontSize: 15 }}>Sample 12′ × 8′ wall — add your wall photo from the Wall menu</text>
-          )}
+          {st.showZones && panel !== 'zones' && project.zones.map((z) => {
+            const lp = P(z.x, z.y);
+            return (
+              <g key={z.id}>
+                <polygon class={`zone-rect ${!z.noHang ? 'nopaint-only' : ''}`} points={pts([[z.x, z.y], [z.x + z.w, z.y], [z.x + z.w, z.y + z.h], [z.x, z.y + z.h]])} />
+                <text class="svg-label" x={lp.x + 5} y={lp.y + 14}>{z.label}</text>
+              </g>
+            );
+          })}
+          {st.showEyeLevel && (() => {
+            const a = P(geom.x0, geom.eyeY), b = P(geom.x1, geom.eyeY);
+            return <line class="eye-line" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
+          })()}
+          {!wall && (() => {
+            const t = P(geom.centerX, 20);
+            return <text class="svg-label" x={t.x} y={t.y} text-anchor="middle" style={{ fontSize: 15 }}>Sample 12′ × 8′ wall — add your wall photo from the Wall menu</text>;
+          })()}
         </svg>
 
-        {!(preview?.replace) && layout.items.map((it) => {
-          const f = frames.get(it.frameId);
-          if (!f) return null;
-          const sel = selection.includes(it.id);
-          return (
-            <div
-              key={it.id}
-              data-id={it.id}
-              data-testid="placed-item"
-              class={`item ${sel ? 'selected' : ''} ${warn.has(it.id) ? 'warn' : ''}`}
-              style={{ left: X(it.x - f.widthIn / 2), top: Y(it.y - f.heightIn / 2), width: f.widthIn * v.s, height: f.heightIn * v.s, transform: `rotate(${it.rotation}deg)`, zIndex: sel ? 3 : 2 }}
-              onPointerDown={(e) => onItemDown(it, e as unknown as PointerEvent)}
-            >
-              <FrameArt
-                frame={f} s={v.s} fills={it.fills} pictures={pictures}
-                selectedOpening={selOpening?.itemId === it.id ? selOpening.openingId : null}
-                showOpenings={sel && selection.length === 1}
-              />
-              {sel && <div class="sel-ring" />}
-              {sel && selection.length === 1 && (
-                <div class="dim-label" style={{ transform: `translateX(-50%) rotate(${-it.rotation}deg)` }}>
-                  {fmtLen(f.widthIn, units, false)} × {fmtLen(f.heightIn, units)}{it.locked ? ' · locked' : ''}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {preview && preview.items.map((pi, k) => {
-          const f = frames.get(pi.frameId);
-          if (!f) return null;
-          return (
-            <div key={`g${k}`} class="item ghost" style={{ left: X(pi.x - f.widthIn / 2), top: Y(pi.y - f.heightIn / 2), width: f.widthIn * v.s, height: f.heightIn * v.s, zIndex: 4 }}>
-              <FrameArt frame={f} s={v.s} />
-              <div class="sel-ring" />
-            </div>
-          );
-        })}
+        {M && (
+          <div class="world" style={{ transform: worldTransform, pointerEvents: painting ? 'none' : undefined }}>
+            {!(preview?.replace) && layout.items.map((it) => renderItem(it, false, it.id))}
+            {preview && preview.items.map((pi, k) => renderItem(pi, true, `g${k}`))}
+          </div>
+        )}
 
         <svg class="overlay-svg" style={{ zIndex: 5 }}>
-          {guides.guides.map((g, k) =>
-            g.axis === 'x' ? (
-              <line key={k} class="guide-line" x1={X(g.at)} x2={X(g.at)} y1={Y(g.from) - 20} y2={Y(g.to) + 20} />
-            ) : (
-              <line key={k} class="guide-line" y1={Y(g.at)} y2={Y(g.at)} x1={X(g.from) - 20} x2={X(g.to) + 20} />
-            ),
-          )}
-          {guides.gaps.map((g, k) =>
-            g.axis === 'x' ? (
+          {guides.guides.map((g, k) => {
+            const a = g.axis === 'x' ? P(g.at, g.from - 4) : P(g.from - 4, g.at);
+            const b = g.axis === 'x' ? P(g.at, g.to + 4) : P(g.to + 4, g.at);
+            return <line key={k} class="guide-line" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
+          })}
+          {guides.gaps.map((g, k) => {
+            const a = g.axis === 'x' ? P(g.a, g.at) : P(g.at, g.a);
+            const b = g.axis === 'x' ? P(g.b, g.at) : P(g.at, g.b);
+            return (
               <g key={`gap${k}`}>
-                <line class="gap-mark" x1={X(g.a)} x2={X(g.b)} y1={Y(g.at)} y2={Y(g.at)} />
-                <text class="svg-label" x={(X(g.a) + X(g.b)) / 2} y={Y(g.at) - 6} text-anchor="middle">{fmtLen(g.b - g.a, units)}</text>
+                <line class="gap-mark" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />
+                <text class="svg-label" x={(a.x + b.x) / 2 + (g.axis === 'y' ? 8 : 0)} y={(a.y + b.y) / 2 - (g.axis === 'x' ? 8 : -4)} text-anchor={g.axis === 'x' ? 'middle' : 'start'}>{fmtLen(g.b - g.a, units)}</text>
               </g>
-            ) : (
-              <g key={`gap${k}`}>
-                <line class="gap-mark" y1={Y(g.a)} y2={Y(g.b)} x1={X(g.at)} x2={X(g.at)} />
-                <text class="svg-label" x={X(g.at) + 6} y={(Y(g.a) + Y(g.b)) / 2 + 4}>{fmtLen(g.b - g.a, units)}</text>
-              </g>
-            ),
-          )}
-          {dragInfo && union && (
-            <text class="svg-label" x={X(union.x + union.w / 2)} y={Y(union.y) - 12} text-anchor="middle" style={{ fontSize: 13 }}>{dragInfo}</text>
+            );
+          })}
+          {dragInfo && union && (() => {
+            const t = P(union.x + union.w / 2, union.y);
+            return <text class="svg-label" x={t.x} y={t.y - 12} text-anchor="middle" style={{ fontSize: 13 }}>{dragInfo}</text>;
+          })()}
+          {!dragInfo && selection.length === 1 && (() => {
+            const it = layout.items.find((i) => i.id === selection[0]);
+            const f = it && frames.get(it.frameId);
+            if (!it || !f) return null;
+            const b = footprint(it, f);
+            const t = P(it.x, b.y + b.h);
+            return <text class="svg-label" x={t.x} y={t.y + 22} text-anchor="middle" style={{ fontSize: 13 }}>{fmtLen(f.widthIn, units, false)} × {fmtLen(f.heightIn, units)}{it.locked ? ' · locked' : ''}</text>;
+          })()}
+          {strokeDraft && strokeDraft.length > 1 && (
+            <polyline points={strokeDraft.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={paintTool === 'erase' ? 'rgba(255,107,107,0.7)' : 'rgba(143,184,255,0.7)'} stroke-width={brushPx} stroke-linecap="round" stroke-linejoin="round" />
           )}
         </svg>
 
-        {st.showEyeLevel && (
+        {panel === 'zones' && (
+          <svg class="overlay-svg" style={{ zIndex: 6 }}>
+            {project.zones.map((z) => {
+              const lp = P(z.x, z.y), br = P(z.x + z.w, z.y + z.h);
+              const start = (mode2: 'move' | 'resize') => (e: PointerEvent) => {
+                e.stopPropagation();
+                pointers.current.set(e.pointerId, local(e));
+                host.current!.setPointerCapture(e.pointerId);
+                drag.current = { kind: 'zone', zoneId: z.id, mode: mode2, start: z, p0: local(e), before: snapOf(project) };
+              };
+              return (
+                <g key={z.id}>
+                  <polygon class={`zone-rect ${!z.noHang ? 'nopaint-only' : ''}`} style={{ pointerEvents: 'all', cursor: 'move' }} points={pts([[z.x, z.y], [z.x + z.w, z.y], [z.x + z.w, z.y + z.h], [z.x, z.y + z.h]])} onPointerDown={start('move') as any} />
+                  <text class="svg-label" x={lp.x + 5} y={lp.y + 14}>{z.label}</text>
+                  <circle cx={br.x} cy={br.y} r={12} fill="white" stroke="var(--danger)" stroke-width={2} style={{ pointerEvents: 'all', cursor: 'nwse-resize' }} onPointerDown={start('resize') as any} />
+                </g>
+              );
+            })}
+          </svg>
+        )}
+
+        {st.showEyeLevel && M && (
           <div
             class="eye-handle"
-            style={{ left: X(geom.x0) + 8 > 8 ? X(geom.x0) + 8 : 8, top: Y(geom.eyeY) }}
+            style={{ left: Math.max(8, eyeAt.x + 8), top: eyeAt.y }}
             onPointerDown={(e) => {
               e.stopPropagation();
               pointers.current.set(e.pointerId, local(e as unknown as PointerEvent));
@@ -588,31 +713,6 @@ function ArrangeInner({ id }: { id: string }) {
             Eye level {fmtLen(st.eyeLevel, units)}
           </div>
         )}
-
-        {panel === 'zones' && project.zones.map((z) => (
-          <div
-            key={z.id}
-            class="zone-box"
-            style={{ left: X(z.x), top: Y(z.y), width: z.w * v.s, height: z.h * v.s, zIndex: 6, borderColor: z.noHang ? undefined : 'var(--eye)' }}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              pointers.current.set(e.pointerId, local(e as unknown as PointerEvent));
-              host.current!.setPointerCapture(e.pointerId);
-              drag.current = { kind: 'zone', zoneId: z.id, mode: 'move', start: z, p0: local(e as unknown as PointerEvent), before: snapOf(project) };
-            }}
-          >
-            <span class="zone-label">{z.label}</span>
-            <div
-              class="zone-resize"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                pointers.current.set(e.pointerId, local(e as unknown as PointerEvent));
-                host.current!.setPointerCapture(e.pointerId);
-                drag.current = { kind: 'zone', zoneId: z.id, mode: 'resize', start: z, p0: local(e as unknown as PointerEvent), before: snapOf(project) };
-              }}
-            />
-          </div>
-        ))}
       </div>
 
       {/* Top HUD */}
@@ -629,6 +729,13 @@ function ArrangeInner({ id }: { id: string }) {
         <div class="toolbar glass">
           <button class="btn icon-only ghost" onClick={undo} disabled={!hist.current.past.length} aria-label="Undo" data-testid="undo"><Icon name="undo" /></button>
           <button class="btn icon-only ghost" onClick={redo} disabled={!hist.current.future.length} aria-label="Redo" data-testid="redo"><Icon name="redo" /></button>
+          <div class="sep" />
+          {wall && (
+            <div class="segmented" style={{ background: 'transparent', boxShadow: 'none' }}>
+              <button class={mode === 'photo' ? 'on' : ''} data-testid="mode-photo" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, viewMode: 'photo' } }))}>Photo</button>
+              <button class={mode === 'straight' ? 'on' : ''} data-testid="mode-straight" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, viewMode: 'straight' } }))}>Straight-on</button>
+            </div>
+          )}
           <div class="sep" />
           <button class={`btn icon-only ghost ${multi ? 'on' : ''}`} onClick={() => setMulti(!multi)} aria-label="Multi-select" title="Select several"><Icon name="select" /></button>
           <button class="btn icon-only ghost" onClick={fit} aria-label="Fit to screen"><Icon name="fit" /></button>
