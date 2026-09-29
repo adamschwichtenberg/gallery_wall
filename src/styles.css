@@ -308,5 +308,6 @@ input[type='range']::-moz-range-thumb { width: 26px; height: 26px; border: 0; bo
 
 .stage-caption { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 14px); padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; pointer-events: none; }
 
-.grid-line { stroke: rgba(79, 141, 255, 0.35); stroke-width: 0.75; }
-.grid-line.major { stroke: rgba(79, 141, 255, 0.7); stroke-width: 1.3; }
+.grid-line { stroke: rgba(0, 0, 0, 0.16); stroke-width: 0.6; fill: none; }
+.grid-line.major { stroke: rgba(0, 0, 0, 0.3); stroke-width: 0.9; }
+.grid-halo { stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.8; fill: none; }

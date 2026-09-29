@@ -3,7 +3,7 @@ import { emptyFrameFilter, emptyPictureFilter, filterFrames, filterPictures, Fra
 import { FrameThumb } from '../components/FrameArt';
 import { Icon } from '../components/Icon';
 import { useBlobUrl } from '../components/ui';
-import { openModal, useStore } from '../lib/store';
+import { activeLayout, openModal, useStore } from '../lib/store';
 import type { Frame, Picture } from '../lib/types';
 import { fmtSize, SIZE_LABEL } from '../lib/units';
 import { COLOR_SWATCH } from './FrameEditor';
@@ -12,7 +12,10 @@ export function FramesScreen() {
   const frames = useStore((s) => s.frames);
   const units = useStore((s) => s.prefs.units);
   const [filter, setFilter] = useState<FrameFilter>(emptyFrameFilter);
-  const list = filterFrames(frames, filter);
+  const projects = useStore((s) => s.projects);
+  // "On a wall" = used in the current layout of any wall.
+  const placed = new Set(projects.flatMap((p) => activeLayout(p).items.map((i) => i.frameId)));
+  const list = filterFrames(frames, filter, (f) => placed.has(f.id));
   const total = frames.reduce((a, f) => a + f.qty, 0);
   return (
     <div class="screen">
@@ -25,7 +28,7 @@ export function FramesScreen() {
       </div>
       {frames.length > 0 && (
         <div class="filterbar glass">
-          <FrameFilterBar frames={frames} value={filter} onChange={setFilter} />
+          <FrameFilterBar frames={frames} value={filter} onChange={setFilter} placementLabels={['On a wall', 'Not on a wall']} />
         </div>
       )}
       {frames.length === 0 ? (
@@ -68,7 +71,9 @@ function FrameCard({ frame, units }: { frame: Frame; units: 'in' | 'cm' }) {
 export function PicturesScreen() {
   const pictures = useStore((s) => s.pictures);
   const [filter, setFilter] = useState<PictureFilter>(emptyPictureFilter);
-  const list = filterPictures(pictures, filter);
+  const projects = useStore((s) => s.projects);
+  const used = new Set(projects.flatMap((p) => activeLayout(p).items.flatMap((i) => Object.values(i.fills).map((f) => f.pictureId))));
+  const list = filterPictures(pictures, filter, (p) => used.has(p.id));
   return (
     <div class="screen">
       <div class="page-head">
@@ -79,7 +84,7 @@ export function PicturesScreen() {
         <button class="btn primary" data-testid="add-picture" onClick={() => openModal({ kind: 'picture' })}><Icon name="plus" /> Add picture</button>
       </div>
       {pictures.length > 0 && (
-        <div class="filterbar glass"><PictureFilterBar pictures={pictures} value={filter} onChange={setFilter} /></div>
+        <div class="filterbar glass"><PictureFilterBar pictures={pictures} value={filter} onChange={setFilter} usageLabels={['In a frame', 'Not used']} /></div>
       )}
       {pictures.length === 0 ? (
         <div class="empty glass" style={{ borderRadius: 26 }}>

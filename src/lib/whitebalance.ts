@@ -16,17 +16,30 @@ export interface WbEstimate {
 
 export const DEFAULT_COLOR: ColorAdjust = { auto: true, warmth: 0, tint: 0, exposure: 0 };
 
-export function estimateWhiteBalance(src: Img): WbEstimate {
-  const { img } = downscale(src, 400);
+export function estimateWhiteBalance(src: Img, opts: { include?: (x: number, y: number) => boolean; grayStrength?: number } = {}): WbEstimate {
+  const { img, scale } = downscale(src, 400);
   const d = img.data, n = img.width * img.height;
+  // Only consider pixels that belong to the subject (e.g. inside a frame's cut-out).
+  const use = new Uint8Array(n);
+  let used = 0;
+  for (let i = 0; i < n; i++) {
+    const ok = d[i * 4 + 3] > 128 && (!opts.include || opts.include((i % img.width) / scale, Math.floor(i / img.width) / scale));
+    use[i] = ok ? 1 : 0;
+    used += use[i];
+  }
+  if (!used) return { gains: [1, 1, 1], exposure: 1, method: 'gray' };
   const lum = new Float32Array(n);
-  for (let i = 0; i < n; i++) lum[i] = 0.2126 * LIN_LUT[d[i * 4]] + 0.7152 * LIN_LUT[d[i * 4 + 1]] + 0.0722 * LIN_LUT[d[i * 4 + 2]];
-  const sorted = Float32Array.from(lum).sort();
-  const p85 = sorted[Math.floor(n * 0.85)], p98 = sorted[Math.floor(n * 0.98)] || 1e-3;
+  const vals: number[] = [];
+  for (let i = 0; i < n; i++) {
+    lum[i] = 0.2126 * LIN_LUT[d[i * 4]] + 0.7152 * LIN_LUT[d[i * 4 + 1]] + 0.0722 * LIN_LUT[d[i * 4 + 2]];
+    if (use[i]) vals.push(lum[i]);
+  }
+  const sorted = Float32Array.from(vals).sort();
+  const p85 = sorted[Math.floor(used * 0.85)], p98 = sorted[Math.floor(used * 0.98)] || 1e-3;
   // Bright, low-saturation, unclipped pixels: probably white paper or white areas.
   let r = 0, g = 0, b = 0, count = 0;
   for (let i = 0; i < n; i++) {
-    if (lum[i] < p85) continue;
+    if (!use[i] || lum[i] < p85) continue;
     const R = d[i * 4], G = d[i * 4 + 1], B = d[i * 4 + 2];
     const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
     if (mx > 250 || !mx || (mx - mn) / mx > 0.42) continue; // warm bulbs make paper quite orange
@@ -34,13 +47,13 @@ export function estimateWhiteBalance(src: Img): WbEstimate {
   }
   let method: WbEstimate['method'] = 'white';
   let strength = 1;
-  if (count < n * 0.01) {
+  if (count < used * 0.01) {
     // Grey world: the average colour of the whole picture, applied at half strength because
     // colourful pictures aren't grey on average.
     r = g = b = 0;
-    for (let i = 0; i < n; i++) { r += LIN_LUT[d[i * 4]]; g += LIN_LUT[d[i * 4 + 1]]; b += LIN_LUT[d[i * 4 + 2]]; }
+    for (let i = 0; i < n; i++) if (use[i]) { r += LIN_LUT[d[i * 4]]; g += LIN_LUT[d[i * 4 + 1]]; b += LIN_LUT[d[i * 4 + 2]]; }
     method = 'gray';
-    strength = 0.5;
+    strength = opts.grayStrength ?? 0.5;
   }
   const avg = (r + g + b) / 3 || 1;
   const raw: [number, number, number] = [avg / (r || 1), avg / (g || 1), avg / (b || 1)];

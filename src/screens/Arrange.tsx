@@ -690,11 +690,11 @@ function ArrangeInner({ id }: { id: string }) {
             const major = (k: number) => Math.abs((k * g) % 12) < 0.01 || Math.abs((k * g) % 12 - 12) < 0.01;
             for (let k = Math.ceil((x0 - ox) / g); ox + k * g <= x1 && lines.length < 600; k++) {
               const x = ox + k * g, a = P(x, top), b = P(x, geom.floorY);
-              lines.push(<line key={`gx${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
+              lines.push(<line key={`hx${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class="grid-halo" />, <line key={`gx${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
             }
             for (let k = 0; geom.floorY - k * g >= top && lines.length < 1200; k++) {
               const y = geom.floorY - k * g, a = P(x0, y), b = P(x1, y);
-              lines.push(<line key={`gy${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
+              lines.push(<line key={`hy${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class="grid-halo" />, <line key={`gy${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
             }
             const clip = baseSize && wall ? { x: view.tx, y: view.ty, w: baseSize.w * view.s, h: baseSize.h * view.s } : null;
             return (

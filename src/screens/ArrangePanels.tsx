@@ -62,7 +62,8 @@ function InventoryPanel({ ctx }: { ctx: ArrangeCtx }) {
   const [ff, setFf] = useState<FrameFilter>(emptyFrameFilter);
   const [ghost, setGhost] = useState<DragGhost>(null);
   const frames = [...ctx.frames.values()];
-  const fl = filterFrames(frames, ff);
+  // "Placed" here = every copy is already on this layout.
+  const fl = filterFrames(frames, ff, (f) => f.qty - ctx.placedCount(f.id) <= 0);
 
   const onDrop = (g: NonNullable<DragGhost>) => {
     const el = document.elementFromPoint(g.x, g.y) as HTMLElement | null;
@@ -72,7 +73,7 @@ function InventoryPanel({ ctx }: { ctx: ArrangeCtx }) {
 
   return (
     <>
-      {frames.length > 0 && <FrameFilterBar frames={frames} value={ff} onChange={setFf} compact />}
+      {frames.length > 0 && <FrameFilterBar frames={frames} value={ff} onChange={setFf} compact placementLabels={['Placed', 'Available']} />}
       <div class="hint">Tap to add, or drag onto the wall. To change a frame’s picture, tap the frame on the wall.</div>
       <div class="tray-grid">
         {fl.map((f) => {
@@ -561,7 +562,7 @@ function PaintPanel({ ctx }: { ctx: ArrangeCtx }) {
       <div class="section-title">Surface</div>
       <div class="chips">
         {targets.map((t) => (
-          <button key={t.id} class={`chip ${target === t.id ? 'on' : ''}`} data-testid={`surface-${t.kind}`} onClick={() => { ctx.setPaintTarget(t.id); setShowArea(true); }}>
+          <button key={t.id} class={`chip ${target === t.id ? 'on' : ''}`} data-testid={`surface-${t.kind}`} onClick={() => { ctx.setPaintTarget(t.id); setShowArea(!t.hex); }}>
             {t.kind === 'exclude' ? <Icon name="zone" size={12} /> : <span class="dot" style={{ background: t.hex || 'transparent', boxShadow: t.hex ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.5)' }} />}
             {t.name}
           </button>
@@ -570,7 +571,7 @@ function PaintPanel({ ctx }: { ctx: ArrangeCtx }) {
       </div>
       {adding && (
         <div class="col glass" style={{ padding: 10, borderRadius: 14, gap: 6 }}>
-          <button class="list-btn" data-testid="add-ceiling" onClick={() => addSurface('ceiling')}><div class="t"><div>Ceiling</div><div>Found from your measurements — adjust the 4 points</div></div></button>
+          <button class="list-btn" data-testid="add-ceiling" onClick={() => addSurface('ceiling')}><div class="t"><div>Ceiling</div><div>Found from your measurements — adjust the outline</div></div></button>
           <button class="list-btn" data-testid="add-baseboard" onClick={() => addSurface('baseboard')}><div class="t"><div>Baseboard</div><div>A strip along the floor line</div></div></button>
           <button class="list-btn" onClick={() => addSurface('trim')}><div class="t"><div>Trim / molding</div><div>Door or window casing, chair rail…</div></div></button>
           <button class="list-btn" onClick={() => addSurface('area')}><div class="t"><div>Custom area</div><div>An accent section, a second wall…</div></div></button>

@@ -12,11 +12,13 @@ export interface FrameFilter {
   matted: 'any' | 'yes' | 'no';
   tags: string[];
   sort: 'size' | 'size-asc' | 'color' | 'newest' | 'name';
+  placement: 'any' | 'placed' | 'unplaced';
 }
 
-export const emptyFrameFilter: FrameFilter = { q: '', shape: [], color: [], size: [], matted: 'any', tags: [], sort: 'size' };
+export const emptyFrameFilter: FrameFilter = { q: '', shape: [], color: [], size: [], matted: 'any', tags: [], sort: 'size', placement: 'any' };
 
-export function filterFrames(frames: Frame[], f: FrameFilter): Frame[] {
+/** `isPlaced` decides what "placed" means where the filter is used (any wall, or this layout). */
+export function filterFrames(frames: Frame[], f: FrameFilter, isPlaced?: (fr: Frame) => boolean): Frame[] {
   const q = f.q.trim().toLowerCase();
   const out = frames.filter((fr) => {
     if (q && !`${fr.name} ${fr.tags.custom.join(' ')} ${fr.tags.color} ${fr.tags.shape} ${fr.widthIn}x${fr.heightIn}`.toLowerCase().includes(q)) return false;
@@ -26,6 +28,7 @@ export function filterFrames(frames: Frame[], f: FrameFilter): Frame[] {
     if (f.matted === 'yes' && !fr.tags.matted) return false;
     if (f.matted === 'no' && fr.tags.matted) return false;
     if (f.tags.length && !f.tags.every((t) => fr.tags.custom.includes(t))) return false;
+    if (isPlaced && f.placement !== 'any' && isPlaced(fr) !== (f.placement === 'placed')) return false;
     return true;
   });
   const area = (x: Frame) => x.widthIn * x.heightIn;
@@ -43,10 +46,10 @@ function toggle(list: string[], v: string) {
   return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
-export function FrameFilterBar({ frames, value, onChange, compact }: { frames: Frame[]; value: FrameFilter; onChange: (f: FrameFilter) => void; compact?: boolean }) {
+export function FrameFilterBar({ frames, value, onChange, compact, placementLabels }: { frames: Frame[]; value: FrameFilter; onChange: (f: FrameFilter) => void; compact?: boolean; placementLabels?: [string, string] }) {
   const colors = COLOR_ORDER.filter((c) => frames.some((f) => f.tags.color === c));
   const tags = [...new Set(frames.flatMap((f) => f.tags.custom))].sort();
-  const active = value.shape.length + value.color.length + value.size.length + value.tags.length + (value.matted !== 'any' ? 1 : 0);
+  const active = value.shape.length + value.color.length + value.size.length + value.tags.length + (value.matted !== 'any' ? 1 : 0) + (value.placement !== 'any' ? 1 : 0);
   return (
     <div class="col" style={{ gap: 8 }}>
       <div class="row">
@@ -63,6 +66,13 @@ export function FrameFilterBar({ frames, value, onChange, compact }: { frames: F
         </select>
         {active > 0 && <button class="btn small" onClick={() => onChange({ ...emptyFrameFilter, q: value.q, sort: value.sort })}>Clear {active}</button>}
       </div>
+      {placementLabels && (
+        <div class="segmented" style={{ alignSelf: 'flex-start' }}>
+          <button class={value.placement === 'any' ? 'on' : ''} onClick={() => onChange({ ...value, placement: 'any' })}>All</button>
+          <button class={value.placement === 'unplaced' ? 'on' : ''} data-testid="filter-unplaced" onClick={() => onChange({ ...value, placement: 'unplaced' })}>{placementLabels[1]}</button>
+          <button class={value.placement === 'placed' ? 'on' : ''} data-testid="filter-placed" onClick={() => onChange({ ...value, placement: 'placed' })}>{placementLabels[0]}</button>
+        </div>
+      )}
       <div class={`chips ${compact ? 'scroll' : ''}`}>
         {(['S', 'M', 'L', 'XL'] as const).map((s) => (
           <button key={s} class={`chip ${value.size.includes(s) ? 'on' : ''}`} onClick={() => onChange({ ...value, size: toggle(value.size, s) })}>{SIZE_LABEL[s]}</button>
@@ -91,16 +101,17 @@ export function FrameFilterBar({ frames, value, onChange, compact }: { frames: F
   );
 }
 
-export interface PictureFilter { q: string; orientation: string[]; color: string[]; tags: string[]; sort: 'newest' | 'name' | 'color' }
-export const emptyPictureFilter: PictureFilter = { q: '', orientation: [], color: [], tags: [], sort: 'newest' };
+export interface PictureFilter { q: string; orientation: string[]; color: string[]; tags: string[]; sort: 'newest' | 'name' | 'color'; usage: 'any' | 'used' | 'unused' }
+export const emptyPictureFilter: PictureFilter = { q: '', orientation: [], color: [], tags: [], sort: 'newest', usage: 'any' };
 
-export function filterPictures(pics: Picture[], f: PictureFilter): Picture[] {
+export function filterPictures(pics: Picture[], f: PictureFilter, isUsed?: (p: Picture) => boolean): Picture[] {
   const q = f.q.trim().toLowerCase();
   const out = pics.filter((p) => {
     if (q && !`${p.name} ${p.tags.custom.join(' ')} ${p.tags.color}`.toLowerCase().includes(q)) return false;
     if (f.orientation.length && !f.orientation.includes(p.tags.orientation)) return false;
     if (f.color.length && !f.color.includes(p.tags.color)) return false;
     if (f.tags.length && !f.tags.every((t) => p.tags.custom.includes(t))) return false;
+    if (isUsed && f.usage !== 'any' && isUsed(p) !== (f.usage === 'used')) return false;
     return true;
   });
   if (f.sort === 'name') out.sort((a, b) => a.name.localeCompare(b.name));
@@ -109,7 +120,7 @@ export function filterPictures(pics: Picture[], f: PictureFilter): Picture[] {
   return out;
 }
 
-export function PictureFilterBar({ pictures, value, onChange, compact }: { pictures: Picture[]; value: PictureFilter; onChange: (f: PictureFilter) => void; compact?: boolean }) {
+export function PictureFilterBar({ pictures, value, onChange, compact, usageLabels }: { pictures: Picture[]; value: PictureFilter; onChange: (f: PictureFilter) => void; compact?: boolean; usageLabels?: [string, string] }) {
   const colors = COLOR_ORDER.filter((c) => pictures.some((p) => p.tags.color === c));
   const tags = [...new Set(pictures.flatMap((p) => p.tags.custom))].sort();
   return (
@@ -122,6 +133,13 @@ export function PictureFilterBar({ pictures, value, onChange, compact }: { pictu
           <option value="name">Name</option>
         </select>
       </div>
+      {usageLabels && (
+        <div class="segmented" style={{ alignSelf: 'flex-start' }}>
+          <button class={value.usage === 'any' ? 'on' : ''} onClick={() => onChange({ ...value, usage: 'any' })}>All</button>
+          <button class={value.usage === 'unused' ? 'on' : ''} onClick={() => onChange({ ...value, usage: 'unused' })}>{usageLabels[1]}</button>
+          <button class={value.usage === 'used' ? 'on' : ''} onClick={() => onChange({ ...value, usage: 'used' })}>{usageLabels[0]}</button>
+        </div>
+      )}
       <div class={`chips ${compact ? 'scroll' : ''}`}>
         {(['portrait', 'landscape', 'square'] as const).map((o) => (
           <button key={o} class={`chip ${value.orientation.includes(o) ? 'on' : ''}`} onClick={() => onChange({ ...value, orientation: toggle(value.orientation, o) })}>{o}</button>

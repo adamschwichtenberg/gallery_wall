@@ -1,16 +1,16 @@
-// Outline a ceiling, baseboard, trim, custom area or no-paint area with four points on the photo.
+// Outline a ceiling, baseboard, trim, custom area or no-paint area with points on the photo.
 import { useState } from 'preact/hooks';
-import { CornerPins } from '../components/CornerPins';
+import { PolygonPins } from '../components/PolygonPins';
 import { Icon } from '../components/Icon';
 import { useBlobUrl, useImgSize } from '../components/ui';
 import { SURFACE_LABEL } from '../lib/paintwall';
 import { getProject, openModal, saveProject, useStore } from '../lib/store';
-import type { Quad, SurfaceKind } from '../lib/types';
+import type { Pt, SurfaceKind } from '../lib/types';
 
 const HINTS: Record<SurfaceKind, string> = {
   ceiling: 'Put the bottom two points on the line where the wall meets the ceiling, and the top two above it. Everything inside that looks like ceiling will be painted.',
   baseboard: 'Put the bottom two points where the baseboard meets the floor, and the top two along its top edge.',
-  trim: 'Surround the trim or molding with the four points — detection stays inside the outline.',
+  trim: 'Surround the trim or molding — detection stays inside the outline. Add points to follow corners.',
   area: 'Surround the area to paint separately (an accent section, a second wall…).',
   exclude: 'Surround anything that must stay exactly as photographed. Nothing inside is painted.',
 };
@@ -19,7 +19,7 @@ export function SurfaceEditor({ projectId, id }: { projectId: string; id: string
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const wall = project?.wall;
   const surface = wall?.surfaces?.find((s) => s.id === id);
-  const [quad, setQuad] = useState<Quad | undefined>(surface?.quad);
+  const [quad, setQuad] = useState<Pt[] | undefined>(surface?.quad);
   const [name, setName] = useState(surface?.name ?? '');
   const url = useBlobUrl(wall?.sourceBlobId);
   const size = useImgSize(url);
@@ -35,11 +35,11 @@ export function SurfaceEditor({ projectId, id }: { projectId: string; id: string
     <div class="fullscreen-editor">
       <div class="editor-body">
         {size ? (
-          <CornerPins
+          <PolygonPins
             src={url}
             imgW={size.w}
             imgH={size.h}
-            quad={quad}
+            pts={quad}
             onChange={setQuad}
             under={(api) => (
               <>
@@ -56,7 +56,8 @@ export function SurfaceEditor({ projectId, id }: { projectId: string; id: string
           <div class="panel glass strong grow">
             <h2>{SURFACE_LABEL[surface.kind]}</h2>
             <div class="hint">{HINTS[surface.kind]}</div>
-            <div class="hint">Drag the four pins; pinch to zoom for precision. Dashed outlines are your other areas.</div>
+            <div class="hint"><b>Drag</b> points to move them. <b>Tap an edge</b> to add a point there (for angled or L-shaped areas); <b>double-tap</b> a point to remove it. Pinch to zoom for precision.</div>
+            <div class="faint small-text">{quad.length} points · dashed outlines are your other areas.</div>
             <label class="field"><span>Name</span><input class="input" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} /></label>
           </div>
           <div class="row">

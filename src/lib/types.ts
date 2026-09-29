@@ -52,6 +52,7 @@ export interface Frame {
   openings: Opening[];
   tags: FrameTags;
   straighten?: StraightenState;
+  color?: ColorAdjust;
   notes?: string;
 }
 
@@ -156,8 +157,8 @@ export interface Surface {
   id: string;
   name: string;
   kind: SurfaceKind;
-  /** Corners in main-photo pixels (TL, TR, BR, BL). */
-  quad: Quad;
+  /** Outline in main-photo pixels: starts as 4 corners, more points can be added. */
+  quad: Pt[];
   paint?: WallPaint;
 }
 

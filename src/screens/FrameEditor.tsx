@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { pointInPolygon } from '../lib/geometry';
+import { downscale, imgToCanvas } from '../lib/imaging';
+import { applyColor, DEFAULT_COLOR, estimateWhiteBalance, isNeutral } from '../lib/whitebalance';
 import { CornerPins } from '../components/CornerPins';
 import { Icon } from '../components/Icon';
 import { gridOpenings, OpeningsEditor } from '../components/OpeningsEditor';
@@ -9,7 +12,7 @@ import { COLOR_ORDER, contourToOutline, detectFrame, detectOpenings } from '../l
 import type { Img } from '../lib/imaging';
 import { autoFrameTags, loadSource, loadStoredSource, nextFrame, storeCanvas, straightenFrame, type Straightened } from '../lib/pipeline';
 import { deleteFrame, getState, openModal, saveFrame, toast, useStore } from '../lib/store';
-import type { Frame, FrameShape, FrameTags, Opening, Pt, Quad, SizeGroup } from '../lib/types';
+import type { ColorAdjust, Frame, FrameShape, FrameTags, Opening, Pt, Quad, SizeGroup } from '../lib/types';
 import { fmtSize, SIZE_LABEL } from '../lib/units';
 
 const STEPS = ['Photo', 'Corners & size', 'Outline', 'Openings', 'Details'];
@@ -46,11 +49,31 @@ export function FrameEditor({ id }: { id?: string }) {
   const [name, setName] = useState(existing?.name ?? '');
   const [qty, setQty] = useState(existing?.qty ?? 1);
   const [depth, setDepth] = useState(existing?.depthIn ?? 1);
+  const [color, setColor] = useState<ColorAdjust>(existing?.color ?? DEFAULT_COLOR);
+  const [compare, setCompare] = useState(false);
   const [tags, setTags] = useState<FrameTags | null>(existing?.tags ?? null);
   const [tagText, setTagText] = useState('');
   const [notes, setNotes] = useState(existing?.notes ?? '');
 
   const existingImgUrl = useBlobUrl(existing?.imageBlobId);
+
+  // White balance: estimated from pixels inside the cut-out only (not the floor underneath).
+  const est = useMemo(() => {
+    if (!rect || outline.length < 3) return null;
+    const poly = outline.map((p) => ({ x: (p.x + rect.padX) * rect.ppi, y: (p.y + rect.padY) * rect.ppi }));
+    return estimateWhiteBalance(rect.img, { include: (x, y) => pointInPolygon({ x, y }, poly), grayStrength: 0.3 });
+  }, [rect, outline]);
+  const small = useMemo(() => (rect ? downscale(rect.img, 800) : null), [rect]);
+  const correctedUrl = useMemo(() => {
+    if (!small || isNeutral(color)) return rect?.url;
+    return imgToCanvas(applyColor(small.img, color, est)).toDataURL('image/jpeg', 0.85);
+  }, [small, color, est]);
+  /** The straightened frame with colour correction applied (full resolution). */
+  const corrected = (r: Straightened): Straightened => {
+    if (isNeutral(color)) return r;
+    const img = applyColor(r.img, color, est ?? estimateWhiteBalance(r.img));
+    return { ...r, img, canvas: imgToCanvas(img) };
+  };
 
   // Load the stored source photo when editing.
   useEffect(() => {
@@ -171,9 +194,10 @@ export function FrameEditor({ id }: { id?: string }) {
   };
 
   const save = async () => {
-    const r = await ensureRect();
-    if (!r && !existing) return;
+    const r0 = await ensureRect();
+    if (!r0 && !existing) return;
     setBusy('Saving…');
+    const r = r0 ? corrected(r0) : null;
     await nextFrame();
     try {
       let imageBlobId = existing?.imageBlobId ?? '';
@@ -199,6 +223,7 @@ export function FrameEditor({ id }: { id?: string }) {
         padY,
         outline,
         openings,
+        color,
         tags: tags ?? { ...auto!, custom: [] },
         straighten: sourceBlobId && quad ? { sourceBlobId, quad, fineRotation: fine } : existing?.straighten,
         notes: notes.trim() || undefined,
@@ -266,7 +291,8 @@ export function FrameEditor({ id }: { id?: string }) {
         )}
         {step === 4 && rect && (
           <div class="editor-stage" style={{ display: 'grid', placeItems: 'center', background: 'radial-gradient(circle at 50% 40%, #2a2a33, #0b0b0e)' }}>
-            <FramePreview rect={rect} outline={outline} />
+            <FramePreview rect={rect} outline={outline} url={compare ? rect.url : correctedUrl ?? rect.url} />
+            {compare && <div class="stage-caption glass" style={{ bottom: 'calc(var(--safe-b) + 24px)' }}>Original</div>}
           </div>
         )}
 
@@ -384,6 +410,20 @@ export function FrameEditor({ id }: { id?: string }) {
                     </div>
                   </label>
                   <LengthInput label="Depth off the wall (for 3D and AR)" value={depth} onChange={setDepth} />
+                  <div class="section-title">Color</div>
+                  <Toggle label="Auto white balance" on={color.auto} onChange={(v) => setColor({ ...color, auto: v })} />
+                  <div class="faint small-text">
+                    {color.auto && est ? (est.method === 'white'
+                      ? 'Corrects the room’s lighting using the white mat / paper inside the frame.'
+                      : 'No white inside the frame — applied a gentle correction so the finish keeps its color.') : 'Showing the colors exactly as photographed.'}
+                  </div>
+                  <label class="field"><span>Warmth {color.warmth > 0 ? '+' : ''}{Math.round(color.warmth * 100)}</span><input type="range" min={-1} max={1} step={0.05} value={color.warmth} onInput={(e) => setColor({ ...color, warmth: +(e.target as HTMLInputElement).value })} /></label>
+                  <label class="field"><span>Tint {color.tint > 0 ? '+' : ''}{Math.round(color.tint * 100)}</span><input type="range" min={-1} max={1} step={0.05} value={color.tint} onInput={(e) => setColor({ ...color, tint: +(e.target as HTMLInputElement).value })} /></label>
+                  <label class="field"><span>Brightness {color.exposure > 0 ? '+' : ''}{color.exposure.toFixed(1)}</span><input type="range" min={-1} max={1} step={0.1} value={color.exposure} onInput={(e) => setColor({ ...color, exposure: +(e.target as HTMLInputElement).value })} /></label>
+                  <div class="row wrap">
+                    <button class="btn small" onPointerDown={() => setCompare(true)} onPointerUp={() => setCompare(false)} onPointerLeave={() => setCompare(false)}>Hold to compare</button>
+                    <button class="btn small ghost" onClick={() => setColor({ ...DEFAULT_COLOR, auto: color.auto })}>Reset sliders</button>
+                  </div>
                   <div class="section-title">Shape</div>
                   <div class="chips">
                     {SHAPES.map((s) => <button key={s} class={`chip ${tags.shape === s ? 'on' : ''}`} onClick={() => setTags({ ...tags, shape: s })}>{s}</button>)}
@@ -499,13 +539,13 @@ export function FineRotate({ value, onChange }: { value: number; onChange: (v: n
 }
 
 /** The cut-out frame on a neutral background (used on the Details step). */
-function FramePreview({ rect, outline }: { rect: Straightened; outline: Pt[] }) {
+function FramePreview({ rect, outline, url }: { rect: Straightened; outline: Pt[]; url: string }) {
   const W = rect.img.width, H = rect.img.height;
   const clip = outline.map((p) => `${(((p.x + rect.padX) * rect.ppi) / W) * 100}% ${(((p.y + rect.padY) * rect.ppi) / H) * 100}%`).join(',');
   const scale = Math.min(1, 520 / Math.max(W, H));
   return (
     <div style={{ filter: 'drop-shadow(0 16px 30px rgba(0,0,0,0.6))' }}>
-      <img src={rect.url} style={{ width: W * scale, height: H * scale, clipPath: `polygon(${clip})`, WebkitClipPath: `polygon(${clip})` }} />
+      <img src={url} data-testid="frame-preview" style={{ width: W * scale, height: H * scale, clipPath: `polygon(${clip})`, WebkitClipPath: `polygon(${clip})` }} />
     </div>
   );
 }

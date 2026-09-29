@@ -27,107 +27,101 @@ export interface MaskOptions {
 export interface SmallMask { m: Float32Array; w: number; h: number; scale: number }
 
 /**
- * Detect the painted wall across the whole photo.
+ * Detect a painted surface across the photo.
  *
- * Real rooms mix warm and cool light, so a wall's colour drifts across the photo. The fill
- * compares each pixel with its neighbour (gradual drift is allowed) and only loosely with the
- * wall's reference colour, and stops at edges — trim, outlets, fixtures, the ceiling line.
+ * Geodesic region growing: starting inside the pinned area, the cost of stepping from one pixel
+ * to the next is how much the colour/brightness changes *beyond the wall's own texture noise*
+ * (measured from the seed area, so orange-peel or knockdown texture is free). Gradual drifts from
+ * mixed warm/cool lighting cost little, crisp edges (trim, outlets, the ceiling line) cost a lot.
+ * A pixel belongs to the wall if it can be reached cheaply enough; Sensitivity sets the budget.
  */
 export function detectWallMask(img: Img, o: MaskOptions): SmallMask {
   const { img: small, scale } = downscale(img, 720);
-  const w = small.width, h = small.height, n = w * h, d = small.data;
-  const lum = new Float32Array(n), cr = new Float32Array(n), cg = new Float32Array(n);
+  const w = small.width, h = small.height, n = w * h, d0 = small.data;
+  // Light blur so sensor noise and fine texture don't read as edges.
+  const d = boxBlur3(d0, w, h);
+  const logL = new Float32Array(n), cr = new Float32Array(n), cg = new Float32Array(n), lum = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const r = LIN_LUT[d[i * 4]], g = LIN_LUT[d[i * 4 + 1]], b = LIN_LUT[d[i * 4 + 2]];
+    const r = LIN_LUT[d[i * 4] | 0], g = LIN_LUT[d[i * 4 + 1] | 0], b = LIN_LUT[d[i * 4 + 2] | 0];
     const s = r + g + b + 1e-4;
     lum[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    logL[i] = Math.log(lum[i] + 0.004);
     cr[i] = r / s;
     cg[i] = g / s;
   }
-  const quad = o.seedQuad.map((p) => ({ x: p.x * scale, y: p.y * scale }));
-  const at = (u: number, v: number) => {
-    // Bilinear point inside the pinned quad (TL, TR, BR, BL).
-    const top = { x: quad[0].x + (quad[1].x - quad[0].x) * u, y: quad[0].y + (quad[1].y - quad[0].y) * u };
-    const bot = { x: quad[3].x + (quad[2].x - quad[3].x) * u, y: quad[3].y + (quad[2].y - quad[3].y) * u };
-    return { x: Math.round(top.x + (bot.x - top.x) * v), y: Math.round(top.y + (bot.y - top.y) * v) };
-  };
   const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h;
 
-  // Excluded pixels (no-paint zones).
+  // Excluded pixels (no-paint zones, other surfaces, outside the allowed region).
   const excluded = new Uint8Array(n);
-  for (const poly of o.exclude) {
+  const rasterise = (poly: Pt[], value: number, invert = false) => {
     const pp = poly.map((p) => ({ x: p.x * scale, y: p.y * scale }));
+    if (invert) {
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (!pointInPolygon({ x, y }, pp)) excluded[y * w + x] = value;
+      return;
+    }
     const bx0 = Math.max(0, Math.floor(Math.min(...pp.map((p) => p.x)))), bx1 = Math.min(w - 1, Math.ceil(Math.max(...pp.map((p) => p.x))));
     const by0 = Math.max(0, Math.floor(Math.min(...pp.map((p) => p.y)))), by1 = Math.min(h - 1, Math.ceil(Math.max(...pp.map((p) => p.y))));
-    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) if (pointInPolygon({ x, y }, pp)) excluded[y * w + x] = 1;
-  }
+    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) if (pointInPolygon({ x, y }, pp)) excluded[y * w + x] = value;
+  };
+  for (const poly of o.exclude) rasterise(poly, 1);
+  if (o.clip && o.clip.length > 2) rasterise(o.clip, 1, true);
 
-  if (o.clip && o.clip.length > 2) {
-    const cp = o.clip.map((p) => ({ x: p.x * scale, y: p.y * scale }));
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (!pointInPolygon({ x, y }, cp)) excluded[y * w + x] = 1;
+  // Seeds: points well inside the pinned area.
+  const seedPoly = o.seedQuad.map((p) => ({ x: p.x * scale, y: p.y * scale }));
+  const cx = seedPoly.reduce((a, p) => a + p.x, 0) / seedPoly.length, cy = seedPoly.reduce((a, p) => a + p.y, 0) / seedPoly.length;
+  const inner = seedPoly.map((p) => ({ x: cx + (p.x - cx) * 0.6, y: cy + (p.y - cy) * 0.6 }));
+  const ib = { x0: Math.min(...inner.map((p) => p.x)), x1: Math.max(...inner.map((p) => p.x)), y0: Math.min(...inner.map((p) => p.y)), y1: Math.max(...inner.map((p) => p.y)) };
+  const stepS = Math.max(2, Math.round(Math.min(ib.x1 - ib.x0, ib.y1 - ib.y0) / 40));
+  const seeds: number[] = [];
+  for (let y = Math.floor(ib.y0); y <= ib.y1; y += stepS) for (let x = Math.floor(ib.x0); x <= ib.x1; x += stepS) {
+    if (inside(x, y) && !excluded[y * w + x] && pointInPolygon({ x, y }, inner)) seeds.push(y * w + x);
   }
+  if (!seeds.length) { const c = { x: Math.round(cx), y: Math.round(cy) }; if (inside(c.x, c.y)) seeds.push(c.y * w + c.x); }
 
-  // Reference paint colour from the middle of the pinned area.
-  const refR: number[] = [], refG: number[] = [], refL: number[] = [];
-  for (let u = 0.2; u <= 0.8; u += 0.05) for (let v = 0.2; v <= 0.8; v += 0.05) {
-    const p = at(u, v);
-    if (!inside(p.x, p.y) || excluded[p.y * w + p.x]) continue;
-    const i = p.y * w + p.x;
-    refR.push(cr[i]); refG.push(cg[i]); refL.push(lum[i]);
-  }
-  const med = (a: number[]) => [...a].sort((p, q) => p - q)[a.length >> 1] ?? 0;
-  const mr = med(refR), mg = med(refG), ml = med(refL) || 0.5;
+  const med = (a: ArrayLike<number>) => Array.from(a).sort((p, q) => p - q)[a.length >> 1] ?? 0;
+  const ref = { r: med(seeds.map((i) => cr[i])), g: med(seeds.map((i) => cg[i])), l: med(seeds.map((i) => logL[i])) };
 
-  // Edge strength on log luminance, so edges in shadow count as much as in bright areas.
-  const logL = lum.map((v) => Math.log(v + 0.01));
-  const grad = new Float32Array(n);
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    const i = y * w + x;
-    const gx = logL[i + 1] - logL[i - 1] + 0.5 * (logL[i - w + 1] - logL[i - w - 1] + logL[i + w + 1] - logL[i + w - 1]);
-    const gy = logL[i + w] - logL[i - w] + 0.5 * (logL[i + w - 1] - logL[i - w - 1] + logL[i + w + 1] - logL[i - w + 1]);
-    grad[i] = Math.hypot(gx, gy);
-  }
+  // How different neighbouring pixels are, weighted so chroma and brightness edges compare.
+  const diff = (i: number, j: number) => Math.hypot((cr[j] - cr[i]) * 60, (cg[j] - cg[i]) * 60, (logL[j] - logL[i]) * 2.2);
+  // Texture noise floor, measured on the seeds: typical neighbour differences on plain wall.
+  const noise: number[] = [];
+  for (const i of seeds) { const x = i % w; if (x < w - 1) noise.push(diff(i, i + 1)); if (i + w < n) noise.push(diff(i, i + w)); }
+  noise.sort((a, b) => a - b);
+  const floor = (noise[Math.floor(noise.length * 0.9)] ?? 0.05) * 1.25 + 0.01;
 
   const t = Math.max(0, Math.min(1, o.tolerance));
-  const localTol = 0.003 + t * 0.022;
+  const budget = 0.2 + t * t * 3.2;
   const globalTol = 0.06 + t * 0.3;
-  const gradTol = 0.05 + t * 0.5;
   const mask = new Uint8Array(n);
+  const dist = new Float64Array(n);
 
-  const flood = (seeds: number[], rr: number, rg: number, rl: number) => {
-    const ok = (i: number) => !excluded[i] && Math.hypot(cr[i] - rr, cg[i] - rg) < globalTol && lum[i] > rl * 0.08 && lum[i] < rl * 6;
-    const stack: number[] = [];
-    for (const i of seeds) if (!mask[i] && ok(i)) { mask[i] = 1; stack.push(i); }
-    while (stack.length) {
-      const i = stack.pop()!;
-      const x = i % w, y = (i / w) | 0;
-      const nb = [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1];
+  const grow = (starts: number[], rr: number, rg: number, rl: number) => {
+    const ok = (i: number) => !excluded[i] && Math.hypot(cr[i] - rr, cg[i] - rg) < globalTol && logL[i] > rl - 3 && logL[i] < rl + 1.6;
+    dist.fill(Infinity);
+    const heap = new MinHeap(n >> 2);
+    for (const i of starts) if (ok(i)) { dist[i] = 0; heap.push(0, i); }
+    while (heap.size) {
+      const [di, i] = heap.pop();
+      if (di > dist[i]) continue;
+      mask[i] = 1;
+      const x = i % w;
+      const nb = [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i >= w ? i - w : -1, i + w < n ? i + w : -1];
       for (const j of nb) {
-        if (j < 0 || mask[j] || !ok(j)) continue;
-        if (Math.hypot(cr[j] - cr[i], cg[j] - cg[i]) > localTol) continue;
-        mask[j] = 1;
-        if (grad[j] < gradTol) stack.push(j); // edge pixels are painted but don't spread
+        if (j < 0 || !ok(j)) continue;
+        const nd = di + Math.max(0, diff(i, j) - floor) + 0.0005;
+        if (nd <= budget && nd < dist[j] - 1e-9) { dist[j] = nd; heap.push(nd, j); }
       }
     }
   };
-
-  const seeds: number[] = [];
-  for (let u = 0.25; u <= 0.75; u += 0.025) for (let v = 0.25; v <= 0.75; v += 0.025) {
-    const p = at(u, v);
-    if (inside(p.x, p.y)) {
-      const i = p.y * w + p.x;
-      if (grad[i] < gradTol) seeds.push(i);
-    }
-  }
-  flood(seeds, mr, mg, ml);
-  // Tap-to-fill: flood from each tap using that spot's own colour as the reference.
+  grow(seeds, ref.r, ref.g, ref.l);
+  // Tap-to-fill: grow from each tap using that spot's own colour as the reference.
   for (const tp of o.taps) {
     const x = Math.round(tp.x * scale), y = Math.round(tp.y * scale);
     if (!inside(x, y)) continue;
     const i = y * w + x;
     const ring: number[] = [];
     for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (inside(x + dx, y + dy)) ring.push((y + dy) * w + x + dx);
-    flood(ring, cr[i], cg[i], lum[i] || ml);
+    grow(ring, cr[i], cg[i], logL[i]);
   }
 
   // Close pin-holes from wall texture.
@@ -184,7 +178,7 @@ export function maskPreview(s: SmallMask, rgb: [number, number, number] = [79, 1
     id.data[i * 4] = rgb[0];
     id.data[i * 4 + 1] = rgb[1];
     id.data[i * 4 + 2] = rgb[2];
-    id.data[i * 4 + 3] = Math.round(s.m[i] * 120);
+    id.data[i * 4 + 3] = Math.round(s.m[i] * 70);
   }
   ctx.putImageData(id, 0, 0);
   return c;
@@ -244,3 +238,67 @@ export function repaint(img: Img, mask: Uint8Array, hex: string, strength: numbe
   return { data: out, width: img.width, height: img.height };
 }
 
+
+function boxBlur3(src: Uint8ClampedArray, w: number, h: number): Float32Array {
+  const out = new Float32Array(src.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0, cnt = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            sum += src[(yy * w + xx) * 4 + c];
+            cnt++;
+          }
+        }
+        out[(y * w + x) * 4 + c] = sum / cnt;
+      }
+    }
+  }
+  return out;
+}
+
+/** Binary min-heap of (priority, index) pairs. */
+class MinHeap {
+  private p: Float64Array;
+  private v: Int32Array;
+  size = 0;
+  constructor(cap: number) {
+    this.p = new Float64Array(Math.max(16, cap));
+    this.v = new Int32Array(Math.max(16, cap));
+  }
+  push(pri: number, val: number) {
+    if (this.size === this.p.length) {
+      const np = new Float64Array(this.p.length * 2), nv = new Int32Array(this.v.length * 2);
+      np.set(this.p); nv.set(this.v);
+      this.p = np; this.v = nv;
+    }
+    let i = this.size++;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.p[parent] <= pri) break;
+      this.p[i] = this.p[parent]; this.v[i] = this.v[parent];
+      i = parent;
+    }
+    this.p[i] = pri; this.v[i] = val;
+  }
+  pop(): [number, number] {
+    const top: [number, number] = [this.p[0], this.v[0]];
+    const lp = this.p[--this.size], lv = this.v[this.size];
+    let i = 0;
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= this.size) break;
+      if (c + 1 < this.size && this.p[c + 1] < this.p[c]) c++;
+      if (this.p[c] >= lp) break;
+      this.p[i] = this.p[c]; this.v[i] = this.v[c];
+      i = c;
+    }
+    this.p[i] = lp; this.v[i] = lv;
+    return top;
+  }
+}

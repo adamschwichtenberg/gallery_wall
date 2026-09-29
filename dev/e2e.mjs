@@ -189,6 +189,11 @@ await step('paint', async () => {
   await p.getByTestId('add-ceiling').click();
   await p.waitForSelector('[data-testid=save-surface]');
   await p.waitForTimeout(400);
+  // Add a point by tapping the middle of an edge.
+  const edge = await p.getByTestId('poly-edge-2').boundingBox();
+  await p.mouse.click(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await p.waitForTimeout(200);
+  console.log('   ', await p.locator('text=/\\d+ points/').first().textContent());
   await shot('14c2-ceiling-outline');
   await p.getByTestId('save-surface').click();
   await p.locator('.swatch', { hasText: 'Extra White' }).click();
@@ -287,6 +292,20 @@ await step('tray has frames only', async () => {
   const hasPicturesTab = await p.locator('[data-testid=panel-inventory] .segmented button', { hasText: 'Pictures' }).count();
   if (hasPicturesTab) throw new Error('tray still shows pictures');
   await shot('15b-tray');
+});
+
+await step('inventory placement filter', async () => {
+  await p.locator('[aria-label="Back to walls"]').click();
+  await p.getByTestId('tab-frames').click();
+  await p.getByTestId('filter-unplaced').click();
+  const unplaced = await p.getByTestId('frame-card').count();
+  await p.getByTestId('filter-placed').click();
+  const placed = await p.getByTestId('frame-card').count();
+  console.log('   not on a wall:', unplaced, ' on a wall:', placed);
+  await shot('15c-filter');
+  await p.locator('.topnav button').first().click();
+  await p.locator('.card', { hasText: 'Hallway' }).click();
+  await p.waitForSelector('[data-testid=canvas]');
 });
 
 await step('persistence', async () => {
