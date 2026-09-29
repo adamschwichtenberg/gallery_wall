@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import { CornerPins } from '../components/CornerPins';
 import { Icon } from '../components/Icon';
 import { Busy, LengthInput, PhotoSource, Steps, Toggle } from '../components/ui';
 import { putBlob, uid } from '../lib/db';
 import { COLOR_ORDER } from '../lib/detect';
-import type { Img } from '../lib/imaging';
+import { downscale, imgToCanvas, type Img } from '../lib/imaging';
+import { applyColor, DEFAULT_COLOR, estimateWhiteBalance, isNeutral, type WbEstimate } from '../lib/whitebalance';
 import { autoPictureTags, loadSource, loadStoredSource, nextFrame, printSizeLabel, storeCanvas, straightenPicture } from '../lib/pipeline';
 import { deletePicture, openModal, savePicture, toast, useStore } from '../lib/store';
-import type { Picture, PictureTags, Quad } from '../lib/types';
+import type { ColorAdjust, Picture, PictureTags, Quad } from '../lib/types';
 import { COLOR_SWATCH, FineRotate } from './FrameEditor';
 
 const STEPS = ['Photo', 'Crop', 'Details'];
@@ -24,6 +25,17 @@ export function PictureEditor({ id }: { id?: string }) {
   const [printW, setPrintW] = useState(existing?.printW ?? 5);
   const [printH, setPrintH] = useState(existing?.printH ?? 7);
   const [preview, setPreview] = useState<{ url: string; aspect: number; canvas: HTMLCanvasElement; img: Img } | null>(null);
+  const [color, setColor] = useState<ColorAdjust>(existing?.color ?? DEFAULT_COLOR);
+  const [est, setEst] = useState<WbEstimate | null>(null);
+  const [shown, setShown] = useState<string | null>(null);
+  const [compare, setCompare] = useState(false);
+
+  // Live colour preview on a small copy (fast); the full image is corrected on save.
+  const small = useMemo(() => (preview ? downscale(preview.img, 900).img : null), [preview]);
+  useEffect(() => {
+    if (!small) return;
+    setShown(imgToCanvas(applyColor(small, color, est)).toDataURL('image/jpeg', 0.85));
+  }, [small, color, est]);
   const [name, setName] = useState(existing?.name ?? '');
   const [tags, setTags] = useState<PictureTags | null>(existing?.tags ?? null);
   const [tagText, setTagText] = useState('');
@@ -67,6 +79,7 @@ export function PictureEditor({ id }: { id?: string }) {
     const r = straightenPicture(src.img, quad, fine, hasPrint ? printW : undefined, hasPrint ? printH : undefined);
     const p = { url: r.canvas.toDataURL('image/jpeg', 0.85), aspect: r.aspect, canvas: r.canvas, img: r.img };
     setPreview(p);
+    setEst(estimateWhiteBalance(r.img));
     const auto = autoPictureTags(r.img, r.aspect);
     setTags((t) => (t ? { ...t, orientation: auto.orientation } : { ...auto, custom: [] }));
     setBusy(null);
@@ -84,10 +97,11 @@ export function PictureEditor({ id }: { id?: string }) {
     setBusy('Saving…');
     await nextFrame();
     try {
-      const imageBlobId = p ? await storeCanvas(p.canvas) : existing!.imageBlobId;
+      const corrected = p ? (isNeutral(color) ? p.img : applyColor(p.img, color, est ?? estimateWhiteBalance(p.img))) : null;
+      const imageBlobId = corrected ? await storeCanvas(imgToCanvas(corrected)) : existing!.imageBlobId;
       let sourceBlobId = src?.blobId ?? existing?.straighten?.sourceBlobId;
       if (src?.blob) sourceBlobId = await putBlob(src.blob);
-      const auto = p ? autoPictureTags(p.img, p.aspect) : null;
+      const auto = p && corrected ? autoPictureTags(corrected, p.aspect) : null;
       const pic: Picture = {
         id: existing?.id ?? uid(),
         name: name.trim() || 'Picture',
@@ -98,6 +112,7 @@ export function PictureEditor({ id }: { id?: string }) {
         printH: hasPrint ? printH : undefined,
         tags: tags ?? { ...auto!, custom: [] },
         straighten: sourceBlobId && quad ? { sourceBlobId, quad, fineRotation: fine } : existing?.straighten,
+        color,
       };
       await savePicture(pic);
       toast(existing ? 'Picture updated' : 'Picture added');
@@ -125,7 +140,8 @@ export function PictureEditor({ id }: { id?: string }) {
         {step === 1 && !src && <div class="editor-stage" style={{ display: 'grid', placeItems: 'center' }}><div class="spinner" /></div>}
         {step === 2 && preview && (
           <div class="editor-stage" style={{ display: 'grid', placeItems: 'center', background: 'radial-gradient(circle at 50% 40%, #2a2a33, #0b0b0e)' }}>
-            <img src={preview.url} style={{ maxWidth: '80%', maxHeight: '75%', boxShadow: '0 20px 40px rgba(0,0,0,0.5)' }} />
+            <img src={compare || !shown ? preview.url : shown} data-testid="picture-preview" style={{ maxWidth: '80%', maxHeight: '75%', boxShadow: '0 20px 40px rgba(0,0,0,0.5)' }} />
+            {compare && <div class="stage-caption glass" style={{ bottom: 'calc(var(--safe-b) + 24px)' }}>Original</div>}
           </div>
         )}
         {step > 0 && (
@@ -156,6 +172,20 @@ export function PictureEditor({ id }: { id?: string }) {
                   <h2>Details</h2>
                   <div class="faint small-text">{tags.orientation}{printSizeLabel(preview.aspect) ? ` · ${printSizeLabel(preview.aspect)}` : ''}</div>
                   <label class="field"><span>Name</span><input class="input" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} /></label>
+                  <div class="section-title">Color</div>
+                  <Toggle label="Auto white balance" on={color.auto} onChange={(v) => setColor({ ...color, auto: v })} />
+                  <div class="faint small-text">
+                    {color.auto && est ? (est.method === 'white'
+                      ? 'Corrects the room’s lighting using the white paper / white areas of the print.'
+                      : 'No clear white found — applied a gentle overall correction.') : 'Showing the colors exactly as photographed.'}
+                  </div>
+                  <label class="field"><span>Warmth {color.warmth > 0 ? '+' : ''}{Math.round(color.warmth * 100)}</span><input type="range" min={-1} max={1} step={0.05} value={color.warmth} onInput={(e) => setColor({ ...color, warmth: +(e.target as HTMLInputElement).value })} /></label>
+                  <label class="field"><span>Tint {color.tint > 0 ? '+' : ''}{Math.round(color.tint * 100)}</span><input type="range" min={-1} max={1} step={0.05} value={color.tint} onInput={(e) => setColor({ ...color, tint: +(e.target as HTMLInputElement).value })} /></label>
+                  <label class="field"><span>Brightness {color.exposure > 0 ? '+' : ''}{color.exposure.toFixed(1)}</span><input type="range" min={-1} max={1} step={0.1} value={color.exposure} onInput={(e) => setColor({ ...color, exposure: +(e.target as HTMLInputElement).value })} /></label>
+                  <div class="row wrap">
+                    <button class="btn small" onPointerDown={() => setCompare(true)} onPointerUp={() => setCompare(false)} onPointerLeave={() => setCompare(false)}>Hold to compare</button>
+                    <button class="btn small ghost" onClick={() => setColor({ ...DEFAULT_COLOR, auto: color.auto })}>Reset sliders</button>
+                  </div>
                   <div class="section-title">Main color</div>
                   <div class="chips">
                     {COLOR_ORDER.filter((c) => c !== 'gold' && c !== 'silver' && c !== 'wood').map((c) => (

@@ -14,6 +14,7 @@ export type Modal =
   | { kind: 'picture'; id?: string }
   | { kind: 'wall'; projectId: string }
   | { kind: 'vantage'; projectId: string; id?: string }
+  | { kind: 'surface'; projectId: string; id: string }
   | { kind: 'settings' }
   | null;
 
@@ -26,6 +27,8 @@ export interface State {
   route: Route;
   modal: Modal;
   toast: { text: string; id: number } | null;
+  /** A wall-colour render is in progress. */
+  painting: boolean;
 }
 
 let state: State = {
@@ -37,6 +40,7 @@ let state: State = {
   route: { name: 'projects' },
   modal: null,
   toast: null,
+  painting: false,
 };
 
 const listeners = new Set<() => void>();

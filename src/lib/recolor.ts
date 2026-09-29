@@ -212,7 +212,8 @@ function boxBlur(src: ArrayLike<number>, w: number, h: number, r: number): Float
 }
 
 /** Repaint masked pixels with `hex`, preserving the original light. Returns a new image. */
-export function repaint(img: Img, mask: Uint8Array, hex: string, strength: number): Img {
+/** Repaint masked pixels of `img`. Writes into `into` (e.g. an earlier surface's result) if given. */
+export function repaint(img: Img, mask: Uint8Array, hex: string, strength: number, into?: Uint8ClampedArray): Img {
   const d = img.data, n = img.width * img.height;
   // Estimate the original paint colour: median linear RGB of confidently-masked pixels.
   const rs: number[] = [], gs: number[] = [], bs: number[] = [];
@@ -226,7 +227,7 @@ export function repaint(img: Img, mask: Uint8Array, hex: string, strength: numbe
   const base = [med(rs), med(gs), med(bs)].map((v) => Math.max(0.02, v));
   const [tr, tg, tb] = hexToRgb(hex).map((v) => LIN_LUT[v]);
   const target = [tr, tg, tb];
-  const out = new Uint8ClampedArray(d);
+  const out = into ?? new Uint8ClampedArray(d);
   for (let i = 0; i < n; i++) {
     const m = (mask[i] / 255) * strength;
     if (m <= 0) continue;

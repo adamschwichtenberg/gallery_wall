@@ -58,21 +58,21 @@ export function View3D({ project, layout, frames, pictures, onClose }: { project
     <div class="fullscreen-editor" style={{ zIndex: 45 }}>
       <div ref={host} class="three-host" data-testid="three-host" />
       <div class="editor-head">
-        <button class="btn icon-only glass" onClick={onClose} aria-label="Close 3D view"><Icon name="close" /></button>
-        <div class="toolbar glass" style={{ flexWrap: 'wrap' }}>
+        <button class="btn icon-only glass strong" onClick={onClose} aria-label="Close 3D view"><Icon name="close" /></button>
+        <div class="toolbar glass strong" style={{ flexWrap: 'wrap' }}>
           {VANTAGES.map((v) => (
             <button key={v.id} class={`btn small ghost ${active === v.id ? 'on' : ''}`} onClick={() => { setActive(v.id); viewer.current?.goTo(v.id); }}>{v.label}</button>
           ))}
         </div>
       </div>
-      <div class="hud-bottom toolbar glass">
+      <div class="hud-bottom toolbar glass strong">
         <ArButton project={project} layout={layout} frames={frames} pictures={pictures} />
         <div class="sep" />
         <button class="btn ghost" onClick={async () => { const b = await viewer.current?.snapshot(); if (b) await shareOrDownload(b, `${project.name} - 3D.png`); }}>
           <Icon name="camera" /> <span class="lbl-sm">Save view</span>
         </button>
       </div>
-      <div class="three-hint glass">Drag to look around · pinch to walk closer · two fingers to slide</div>
+      <div class="three-hint glass strong">Drag to look around · pinch to walk closer · two fingers to slide</div>
       {busy && <Busy text={busy} />}
     </div>
   );

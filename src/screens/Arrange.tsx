@@ -5,7 +5,7 @@ import { Icon } from '../components/Icon';
 import { useBlobUrl, useImgSize } from '../components/ui';
 import { footprint, snap, suggestFill, unionBox, type Box, type GapMark, type Guide } from '../lib/arrange';
 import { deleteBlob, uid } from '../lib/db';
-import { paintKeyOf, paintVantage } from '../lib/paintwall';
+import { ceilingHeightOf, DEFAULT_PAINT, paintKeyOf, paintVantage, requestPaintRender } from '../lib/paintwall';
 import { applyH, rectsOverlap, type Mat3 } from '../lib/geometry';
 import { cssMatrix, invert3, localScale, multiply3, scaleMat, viewMat, wallToSource, wallToStraight } from '../lib/projection';
 import { storeCanvas } from '../lib/pipeline';
@@ -48,6 +48,9 @@ export interface ArrangeCtx {
   setBrushPx: (n: number) => void;
   maskOverlay: MaskOverlay | null;
   setMaskOverlay: (m: MaskOverlay | null) => void;
+  /** Which surface paint tools act on: 'wall' or a surface id. */
+  paintTarget: string;
+  setPaintTarget: (id: string) => void;
 }
 
 export type PaintTool = 'none' | 'brush' | 'erase' | 'wand';
@@ -115,6 +118,7 @@ function ArrangeInner({ id }: { id: string }) {
   const [paintTool, setPaintTool] = useState<PaintTool>('none');
   const [brushPx, setBrushPx] = useState(36);
   const [maskOverlay, setMaskOverlay] = useState<MaskOverlay | null>(null);
+  const [paintTarget, setPaintTarget] = useState('wall');
   const [strokeDraft, setStrokeDraft] = useState<Pt[] | null>(null);
   const [show3d, setShow3d] = useState(false);
   const [, bump] = useState(0);
@@ -133,7 +137,14 @@ function ArrangeInner({ id }: { id: string }) {
   const srcSize = useImgSize(srcUrl);
   const vUrl = useBlobUrl(vantage?.sourceBlobId);
   const vSize = useImgSize(vUrl);
-  const paintKey = wall?.paint?.hex ? paintKeyOf(wall, project.zones, wall.paint) : '';
+  const paintKey = wall ? paintKeyOf(wall, project.zones) : '';
+  // Keep the painted images in step with the paint settings (renders are single-flight and
+  // self-healing, so a missing or stale image is simply re-rendered).
+  useEffect(() => {
+    if (!wall) return;
+    const t = setTimeout(() => requestPaintRender(id), 250);
+    return () => clearTimeout(t);
+  }, [paintKey]);
   const vPaintedUrl = useBlobUrl(vantage && vantage.paintKey === paintKey ? vantage.paintedBlobId : undefined);
 
   const layout = activeLayout(project);
@@ -422,7 +433,10 @@ function ArrangeInner({ id }: { id: string }) {
       let sy = 0;
       if (st.snap && !e.altKey) {
         const others = boxes(layout.items.filter((i) => !d.ids.includes(i.id)));
-        const r = snap(u, others, { gap: st.gap, tol: 10 / pxPerIn({ x: u.x + u.w / 2, y: u.y + u.h / 2 }), xLines: [geom.centerX], yLines: st.showEyeLevel ? [geom.eyeY] : [] });
+        const r = snap(u, others, {
+          gap: st.gap, tol: 10 / pxPerIn({ x: u.x + u.w / 2, y: u.y + u.h / 2 }), xLines: [geom.centerX], yLines: st.showEyeLevel ? [geom.eyeY] : [],
+          grid: st.showGrid ? { step: st.gridSize ?? 6, ox: geom.hang.x0, oy: geom.floorY } : undefined,
+        });
         dx += r.dx;
         dy += r.dy;
         sy = r.dy;
@@ -491,7 +505,8 @@ function ArrangeInner({ id }: { id: string }) {
     const toSrc = (p: Pt) => { const wp = localToWall(p); return applyH(Hsrc, wp.x, wp.y); };
     const srcPts = pts.map(toSrc);
     const cur = getProject(id)!;
-    const paint = cur.wall!.paint ?? { hex: '', name: '', strength: 1, tolerance: 0.6 };
+    const surf = cur.wall!.surfaces?.find((x) => x.id === paintTarget);
+    const paint = (paintTarget === 'wall' ? cur.wall!.paint : surf?.paint) ?? DEFAULT_PAINT;
     let next = paint;
     if (paintTool === 'wand' || pts.length < 3) {
       if (paintTool !== 'wand') return;
@@ -508,7 +523,9 @@ function ArrangeInner({ id }: { id: string }) {
       };
       next = { ...paint, strokes: [...(paint.strokes ?? []), stroke] };
     }
-    void saveProject({ ...cur, wall: { ...cur.wall!, paint: next } }, false);
+    const w = cur.wall!;
+    const nw = paintTarget === 'wall' || !surf ? { ...w, paint: next } : { ...w, surfaces: (w.surfaces ?? []).map((x) => (x.id === surf.id ? { ...x, paint: next } : x)) };
+    void saveProject({ ...cur, wall: nw }, false);
   };
 
   const clampS = (s: number) => {
@@ -593,7 +610,7 @@ function ArrangeInner({ id }: { id: string }) {
   const ctx: ArrangeCtx = {
     project, layout, frames, pictures, selection, setSelection, selOpening, setSelOpening, commit, updateLayout, addFrame, placedCount,
     wallGeom: geom, preview, setPreview, reposition, setReposition, fit, panel, setPanel, units, clientToWall: toWall,
-    mode, paintTool, setPaintTool, brushPx, setBrushPx, maskOverlay, setMaskOverlay,
+    mode, paintTool, setPaintTool, brushPx, setBrushPx, maskOverlay, setMaskOverlay, paintTarget, setPaintTarget,
   };
 
   const P = (x: number, y: number): Pt => (M ? applyH(M, x, y) : { x, y });
@@ -663,6 +680,30 @@ function ArrangeInner({ id }: { id: string }) {
               </g>
             );
           })}
+          {st.showGrid && M && (() => {
+            const g = Math.max(0.5, st.gridSize ?? 6);
+            const ceil = wall ? ceilingHeightOf(wall) : undefined;
+            const top = ceil ? geom.floorY - ceil : geom.y0;
+            const x0 = geom.x0, x1 = geom.x1;
+            const lines: preact.JSX.Element[] = [];
+            const ox = geom.hang.x0;
+            const major = (k: number) => Math.abs((k * g) % 12) < 0.01 || Math.abs((k * g) % 12 - 12) < 0.01;
+            for (let k = Math.ceil((x0 - ox) / g); ox + k * g <= x1 && lines.length < 600; k++) {
+              const x = ox + k * g, a = P(x, top), b = P(x, geom.floorY);
+              lines.push(<line key={`gx${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
+            }
+            for (let k = 0; geom.floorY - k * g >= top && lines.length < 1200; k++) {
+              const y = geom.floorY - k * g, a = P(x0, y), b = P(x1, y);
+              lines.push(<line key={`gy${k}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} class={`grid-line ${major(k) ? 'major' : ''}`} />);
+            }
+            const clip = baseSize && wall ? { x: view.tx, y: view.ty, w: baseSize.w * view.s, h: baseSize.h * view.s } : null;
+            return (
+              <g clip-path={clip ? 'url(#photo-clip)' : undefined}>
+                {clip && <defs><clipPath id="photo-clip"><rect x={clip.x} y={clip.y} width={clip.w} height={clip.h} /></clipPath></defs>}
+                {lines}
+              </g>
+            );
+          })()}
           {st.showEyeLevel && (() => {
             const a = P(geom.x0, geom.eyeY), b = P(geom.x1, geom.eyeY);
             return <line class="eye-line" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
@@ -707,6 +748,13 @@ function ArrangeInner({ id }: { id: string }) {
             const b = footprint(it, f);
             const t = P(it.x, b.y + b.h);
             return <text class="svg-label" x={t.x} y={t.y + 22} text-anchor="middle" style={{ fontSize: 13 }}>{fmtLen(f.widthIn, units, false)} × {fmtLen(f.heightIn, units)}{it.locked ? ' · locked' : ''}</text>;
+          })()}
+          {panel === 'paint' && Hsrc && M && (() => {
+            const surf = wall?.surfaces?.find((x) => x.id === paintTarget);
+            if (!surf) return null;
+            const T = multiply3(M, invert3(Hsrc));
+            const q = surf.quad.map((p) => applyH(T, p.x, p.y));
+            return <polygon points={q.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={surf.kind === 'exclude' ? 'var(--danger)' : 'white'} stroke-width={1.5} stroke-dasharray="6 4" />;
           })()}
           {strokeDraft && strokeDraft.length > 1 && (
             <polyline points={strokeDraft.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={paintTool === 'erase' ? 'rgba(255,107,107,0.7)' : 'rgba(143,184,255,0.7)'} stroke-width={brushPx} stroke-linecap="round" stroke-linejoin="round" />
@@ -801,6 +849,7 @@ function ArrangeInner({ id }: { id: string }) {
         <button class="btn ghost" data-testid="tool-3d" onClick={() => setShow3d(true)}><Icon name="cube" /> <span class="lbl-sm">3D</span></button>
         <div class="sep" />
         <button class={`btn icon-only ghost ${st.snap ? 'on' : ''}`} aria-label="Snapping" title="Snapping" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, snap: !p.settings.snap } }))}><Icon name="magnet" /></button>
+        <button class={`btn icon-only ghost ${st.showGrid ? 'on' : ''}`} aria-label="Grid" title="Grid" data-testid="toggle-grid" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, showGrid: !p.settings.showGrid } }))}><Icon name="grid" /></button>
         <button class={`btn icon-only ghost ${st.showEyeLevel ? 'on' : ''}`} aria-label="Eye level line" title="Eye level line" onClick={() => commit((p) => ({ ...p, settings: { ...p.settings, showEyeLevel: !p.settings.showEyeLevel } }))}><Icon name="eye" /></button>
         <button class={`btn ghost ${panel === 'export' ? 'on' : ''}`} onClick={() => setPanel(panel === 'export' ? null : 'export')} data-testid="tool-export"><Icon name="share" /> <span class="lbl-sm">Export</span></button>
       </div>

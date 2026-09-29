@@ -62,6 +62,17 @@ export interface PictureTags {
   custom: string[];
 }
 
+/** Colour correction for a photographed print. */
+export interface ColorAdjust {
+  auto: boolean;
+  /** −1 (cooler) … +1 (warmer), applied on top of auto. */
+  warmth: number;
+  /** −1 (greener) … +1 (more magenta). */
+  tint: number;
+  /** Exposure in stops, −1 … +1. */
+  exposure: number;
+}
+
 export interface Picture {
   id: string;
   name: string;
@@ -74,6 +85,7 @@ export interface Picture {
   printH?: number;
   tags: PictureTags;
   straighten?: StraightenState;
+  color?: ColorAdjust;
 }
 
 export interface OpeningFill {
@@ -137,6 +149,18 @@ export interface WallPaint {
   strokes?: PaintStroke[];
 }
 
+/** A paintable (or protected) area outlined with four points on the main photo. */
+export type SurfaceKind = 'ceiling' | 'baseboard' | 'trim' | 'area' | 'exclude';
+
+export interface Surface {
+  id: string;
+  name: string;
+  kind: SurfaceKind;
+  /** Corners in main-photo pixels (TL, TR, BR, BL). */
+  quad: Quad;
+  paint?: WallPaint;
+}
+
 export interface Wall {
   sourceBlobId: string;
   quad: Quad;
@@ -156,6 +180,10 @@ export interface Wall {
   paintedBlobId?: string;
   /** Painted version of the original photo. */
   paintedSrcBlobId?: string;
+  /** Which paint settings the painted images were rendered with. */
+  paintedKey?: string;
+  /** Ceiling, baseboards, trim, custom areas and no-paint areas. */
+  surfaces?: Surface[];
 }
 
 export interface ProjectSettings {
@@ -168,6 +196,9 @@ export interface ProjectSettings {
   /** 'photo': the main photo as taken; 'straight': squared-up wall; 'vantage': one of the extra room photos. */
   viewMode?: 'photo' | 'straight' | 'vantage';
   vantageId?: string;
+  showGrid?: boolean;
+  /** Grid spacing in inches. */
+  gridSize?: number;
 }
 
 /** An extra photo of the same wall from another spot in the room. */

@@ -16,8 +16,9 @@
   --guide: #ff4fa3;
   --eye: #ffc94f;
 
-  --glass-fill: rgba(255, 255, 255, 0.10);
-  --glass-fill-strong: rgba(255, 255, 255, 0.16);
+  /* Smoky glass: stays legible over bright wall photos and the 3D view. */
+  --glass-fill: rgba(20, 20, 26, 0.50);
+  --glass-fill-strong: rgba(18, 18, 24, 0.78);
   --glass-rim: rgba(255, 255, 255, 0.28);
   --glass-rim-soft: rgba(255, 255, 255, 0.10);
   --glass-blur: 22px;
@@ -66,8 +67,9 @@ button { font: inherit; color: inherit; }
 /* ---- Glass primitives ------------------------------------------------ */
 .glass {
   background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)), var(--glass-fill);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%) brightness(0.8);
+  backdrop-filter: blur(var(--glass-blur)) saturate(160%) brightness(0.8);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   box-shadow:
     inset 0 1px 0 var(--glass-rim),
     inset 0 -1px 0 rgba(255, 255, 255, 0.05),
@@ -75,7 +77,7 @@ button { font: inherit; color: inherit; }
     var(--glass-shadow);
   border-radius: var(--r-lg);
 }
-.glass.strong { background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)), var(--glass-fill-strong); }
+.glass.strong { background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)), var(--glass-fill-strong); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
@@ -302,6 +304,9 @@ input[type='range']::-moz-range-thumb { width: 26px; height: 26px; border: 0; bo
 
 .three-host { position: absolute; inset: 0; }
 .three-host canvas { display: block; }
-.three-hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 84px); padding: 8px 16px; border-radius: 999px; font-size: 13px; color: var(--text-2); pointer-events: none; }
+.three-hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 84px); padding: 8px 16px; border-radius: 999px; font-size: 13px; color: var(--text); pointer-events: none; }
 
 .stage-caption { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 14px); padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; pointer-events: none; }
+
+.grid-line { stroke: rgba(79, 141, 255, 0.35); stroke-width: 0.75; }
+.grid-line.major { stroke: rgba(79, 141, 255, 0.7); stroke-width: 1.3; }

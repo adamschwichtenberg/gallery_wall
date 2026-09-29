@@ -33,7 +33,7 @@ export interface SnapResult { dx: number; dy: number; guides: Guide[]; gaps: Gap
 export function snap(
   moving: Rect,
   others: Rect[],
-  opts: { gap: number; tol: number; xLines: number[]; yLines: number[] },
+  opts: { gap: number; tol: number; xLines: number[]; yLines: number[]; grid?: { step: number; ox: number; oy: number } },
 ): SnapResult {
   const mx = [moving.x, moving.x + moving.w / 2, moving.x + moving.w];
   const my = [moving.y, moving.y + moving.h / 2, moving.y + moving.h];
@@ -68,6 +68,12 @@ export function snap(
       consider('y', o.y + o.h + opts.gap - moving.y, { gap: { axis: 'y', a: o.y + o.h, b: o.y + o.h + opts.gap, at: midX } });
       consider('y', o.y - opts.gap - (moving.y + moving.h), { gap: { axis: 'y', a: o.y - opts.gap, b: o.y, at: midX } });
     }
+  }
+  if (opts.grid && opts.grid.step > 0) {
+    // Snap edges and centre to the grid (origin: left edge of the measured area, and the floor).
+    const g = opts.grid;
+    for (const v of mx) consider('x', g.ox + Math.round((v - g.ox) / g.step) * g.step - v, {});
+    for (const v of my) consider('y', g.oy - Math.round((g.oy - v) / g.step) * g.step - v, {});
   }
   for (const x of opts.xLines) consider('x', x - mx[1], { guide: { axis: 'x', at: x, from: moving.y - 12, to: moving.y + moving.h + 12, kind: 'wall' } });
   for (const y of opts.yLines) consider('y', y - my[1], { guide: { axis: 'y', at: y, from: moving.x - 12, to: moving.x + moving.w + 12, kind: 'eye' } });

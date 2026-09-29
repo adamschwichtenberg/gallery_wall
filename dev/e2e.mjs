@@ -80,6 +80,8 @@ await step('picture', async () => {
   await p.waitForSelector('text=Crop & straighten');
   await p.getByTestId('next').click();
   await p.waitForSelector('text=Main color');
+  await p.waitForTimeout(500);
+  await shot('06b-picture-color');
   await p.getByTestId('save').click();
   await p.waitForSelector('.fullscreen-editor', { state: 'detached' });
 });
@@ -168,6 +170,38 @@ await step('paint', async () => {
   await p.waitForFunction(() => !document.querySelector('.panel-body .spinner'), null, { timeout: 30000 });
   await shot('14c-paint-erased');
   await p.getByTestId('paint-tool-none').click();
+  // Tinker quickly (this used to lose the colour): several sensitivity changes in a row.
+  const slider = p.getByTestId('paint-tolerance');
+  for (const v of ['0.4', '0.8', '0.5', '0.7', '0.6']) {
+    await slider.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, v);
+    await p.waitForTimeout(120);
+  }
+  await p.waitForTimeout(600);
+  await p.waitForFunction(() => !document.querySelector('.panel-body .spinner'), null, { timeout: 60000 });
+  await p.waitForTimeout(400);
+  const ok = await p.evaluate(async () => {
+    const img = document.querySelector('.wall-img');
+    return img && img.src.startsWith('blob:') && img.naturalWidth > 0;
+  });
+  console.log('   painted image present after tinkering:', ok);
+  // Ceiling + baseboard as separate surfaces.
+  await p.getByTestId('add-surface').click();
+  await p.getByTestId('add-ceiling').click();
+  await p.waitForSelector('[data-testid=save-surface]');
+  await p.waitForTimeout(400);
+  await shot('14c2-ceiling-outline');
+  await p.getByTestId('save-surface').click();
+  await p.locator('.swatch', { hasText: 'Extra White' }).click();
+  await p.getByTestId('add-surface').click();
+  await p.getByTestId('add-baseboard').click();
+  await p.waitForSelector('[data-testid=save-surface]');
+  await p.getByTestId('save-surface').click();
+  await p.locator('.swatch', { hasText: 'Tricorn Black' }).click();
+  await p.waitForTimeout(800);
+  await p.waitForFunction(() => !document.querySelector('.panel-body .spinner'), null, { timeout: 60000 });
+  await p.waitForTimeout(500);
+  await shot('14c3-surfaces');
+  await p.getByTestId('surface-wall').click();
   await p.keyboard.press('Escape');
 });
 
@@ -207,12 +241,19 @@ await step('extra viewpoint', async () => {
   await p.waitForTimeout(500);
 });
 
+await step('grid', async () => {
+  await p.getByTestId('toggle-grid').click();
+  await p.waitForTimeout(300);
+  await shot('14h-grid');
+});
+
 await step('straight-on toggle', async () => {
   await p.getByTestId('mode-straight').click();
   await p.waitForTimeout(800);
   await shot('14d-straight');
   await p.getByTestId('mode-photo').click();
   await p.waitForTimeout(800);
+  await p.getByTestId('toggle-grid').click();
 });
 
 await step('export', async () => {

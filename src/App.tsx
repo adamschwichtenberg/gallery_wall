@@ -7,6 +7,7 @@ import { PictureEditor } from './screens/PictureEditor';
 import { ProjectsScreen, SettingsModal } from './screens/Projects';
 import { WallEditor } from './screens/WallEditor';
 import { VantageEditor } from './screens/VantageEditor';
+import { SurfaceEditor } from './screens/SurfaceEditor';
 import { navigate, openModal, useStore } from './lib/store';
 
 export function App() {
@@ -48,6 +49,7 @@ export function App() {
       {modal?.kind === 'picture' && <PictureEditor id={modal.id} key={modal.id ?? 'new'} />}
       {modal?.kind === 'wall' && <WallEditor projectId={modal.projectId} />}
       {modal?.kind === 'vantage' && <VantageEditor projectId={modal.projectId} id={modal.id} key={modal.id ?? 'new'} />}
+      {modal?.kind === 'surface' && <SurfaceEditor projectId={modal.projectId} id={modal.id} key={modal.id} />}
       {modal?.kind === 'settings' && <SettingsModal />}
       {toast && <div class="toast glass strong" key={toast.id}>{toast.text}</div>}
     </>

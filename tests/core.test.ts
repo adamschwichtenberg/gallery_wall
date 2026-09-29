@@ -134,3 +134,23 @@ describe('least-squares homography', () => {
     expect(reprojectionError(H, src, dst)).toBeLessThan(3);
   });
 });
+
+import { applyColor, estimateWhiteBalance } from '../src/lib/whitebalance';
+describe('white balance', () => {
+  it('neutralises a warm cast on white paper', () => {
+    // A "print" photographed under warm light: white paper looks orange, a red square in the middle.
+    const w = 60, h = 60, data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const inner = x > 20 && x < 40 && y > 20 && y < 40;
+      data[i] = inner ? 200 : 240; data[i + 1] = inner ? 40 : 205; data[i + 2] = inner ? 30 : 160; data[i + 3] = 255;
+    }
+    const img = { data, width: w, height: h };
+    const est = estimateWhiteBalance(img);
+    expect(est.method).toBe('white');
+    const out = applyColor(img, { auto: true, warmth: 0, tint: 0, exposure: 0 }, est);
+    const [r, g, b] = [out.data[0], out.data[1], out.data[2]];
+    expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(10); // paper is neutral now
+    expect(out.data[(30 * w + 30) * 4]).toBeGreaterThan(out.data[(30 * w + 30) * 4 + 1] + 80); // red stays red
+  });
+});

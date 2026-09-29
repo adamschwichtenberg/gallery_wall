@@ -4,10 +4,10 @@ Mock up a gallery wall on your iPad before putting a single nail in the wall.
 
 1. **Photograph your wall** and pin a rectangle you've measured. Work on the photo **as taken** (frames follow its perspective and shrink as they move away from the camera) or on a **straightened** wall, and switch any time.
 2. **Photograph your frames** on the floor and enter their outside size. Each frame is cut out automatically (irregular and ornate edges included), its openings are detected (including multi-opening mats), and it's tagged by shape, color, matting and size.
-3. **Arrange**: drag frames from your inventory onto the wall, snap to edges, equal gaps, wall center and the eye-level line, rotate, lock, align and distribute, undo/redo.
-4. **Swap pictures** into any opening from your picture inventory, with suggestions ranked by how well they fit.
+3. **Arrange**: drag frames from your inventory onto the wall, snap to edges, equal gaps, wall center, the eye-level line and an optional grid of any size, rotate, lock, align and distribute, undo/redo.
+4. **Swap pictures** (with automatic white balance for photographed prints, plus warmth/tint/brightness) into any opening from your picture inventory, with suggestions ranked by how well they fit.
 5. **Autofill** suggests where leftover frames could go, or builds complete Salon / Grid / Symmetric / Single-row arrangements, which you can save as separate layouts to compare.
-6. **Preview wall colors** (a curated Sherwin-Williams palette or any custom color). The whole wall is detected automatically and kept off the ceiling, with a live highlight, a sensitivity slider and brush/eraser/tap-fill touch-ups. The recolor keeps the photo's real light and shadows.
+6. **Preview paint colors** (a curated Sherwin-Williams palette or any custom color). The whole wall is detected automatically and kept off the ceiling. Add a **ceiling**, **baseboard**, **trim**, **custom area** or **no-paint area** (auto-placed from your measurements, adjustable with four points) and give each its own color. Live highlight, sensitivity slider and brush/eraser/tap-fill touch-ups. The recolor keeps the photo's real light and shadows.
 7. **More viewpoints**: add 2–4 photos of the same wall from elsewhere in the room, match 4+ reference points (outlet, smoke detector, corners…), and flip between perspectives, including arranging from any of them.
 8. **3D walk-around** of the wall with real frame depth and shadows, plus **View in AR** (AR Quick Look) to see the arrangement at true size on the real wall with an iPhone or iPad. The AR file can be AirDropped to any iPhone.
 9. **Export** an image of the finished wall via the iPad share sheet.

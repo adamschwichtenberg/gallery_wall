@@ -9,10 +9,10 @@ import { blobUrl, deleteBlob, uid } from '../lib/db';
 import { canvasToImg, imgToCanvas, loadImageElement, makeCanvas } from '../lib/imaging';
 import { PAINT_FAMILIES, SW_PAINTS } from '../lib/paints';
 import { nextFrame, storeCanvas } from '../lib/pipeline';
-import { applyPaint, ceilingHeightOf, previewUrl, wallMaskFor } from '../lib/paintwall';
+import { ceilingHeightOf, DEFAULT_PAINT, loadBlobImg, previewUrl, suggestArea, suggestBaseboard, suggestCeiling, SURFACE_LABEL, targetMask } from '../lib/paintwall';
 import { renderToBlob } from '../lib/render';
-import { getProject, newLayout, openModal, saveProject, toast } from '../lib/store';
-import type { Frame, Layout, OpeningFill, PlacedItem, Project, WallPaint, Zone } from '../lib/types';
+import { getProject, newLayout, openModal, saveProject, toast, useStore } from '../lib/store';
+import type { Frame, Layout, OpeningFill, PlacedItem, Project, Surface, SurfaceKind, WallPaint, Zone } from '../lib/types';
 import { fmtLen, fmtSize } from '../lib/units';
 import { FineRotate } from './FrameEditor';
 import type { ArrangeCtx, PaintTool } from './Arrange';
@@ -492,127 +492,176 @@ function activeLayoutOf(p: Project) {
 
 // ---- Paint -----------------------------------------------------------------------------------
 
-const DEFAULT_PAINT: WallPaint = { hex: '', name: '', strength: 1, tolerance: 0.6 };
-
 function PaintPanel({ ctx }: { ctx: ArrangeCtx }) {
   const wall = ctx.project.wall;
+  const painting = useStore((s) => s.painting);
   const [family, setFamily] = useState('All');
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState<'idle' | 'detecting' | 'painting'>('idle');
-  // Highlight while there's no colour yet or while touching up; otherwise show the real paint.
-  const [showArea, setShowArea] = useState(!wall?.paint?.hex);
-  const showAreaRef = useRef(showArea);
-  showAreaRef.current = showArea;
-  const paint: WallPaint = wall?.paint ?? DEFAULT_PAINT;
+  const [adding, setAdding] = useState(false);
+  const target = ctx.paintTarget;
+  const surface = wall?.surfaces?.find((s) => s.id === target);
+  const paint: WallPaint = (target === 'wall' ? wall?.paint : surface?.paint) ?? DEFAULT_PAINT;
   const list = useMemo(() => SW_PAINTS.filter((p) => (family === 'All' || p.family === family) && `${p.name} ${p.code}`.toLowerCase().includes(q.toLowerCase())), [family, q]);
-  const job = useRef(0);
-  const lastOverlay = useRef<Parameters<ArrangeCtx['setMaskOverlay']>[0]>(null);
+  // Highlight while there's no colour yet or while touching up; otherwise show the real paint.
+  const [showArea, setShowArea] = useState(!paint.hex);
 
-  const savePaint = (next: WallPaint, extra: Partial<NonNullable<Project['wall']>> = {}) => {
+  // If the selected surface disappears (deleted / undo), fall back to the wall.
+  useEffect(() => { if (target !== 'wall' && !surface) ctx.setPaintTarget('wall'); }, [target, !!surface]);
+
+  const savePaint = (next: WallPaint) => {
     const p = getProject(ctx.project.id)!;
-    return saveProject({ ...p, wall: { ...p.wall!, paint: next, ...extra } }, false);
+    const w = p.wall!;
+    const nw = target === 'wall' ? { ...w, paint: next } : { ...w, surfaces: (w.surfaces ?? []).map((s) => (s.id === target ? { ...s, paint: next } : s)) };
+    return saveProject({ ...p, wall: nw }, false);
   };
 
-  // Re-detect (fast) and repaint (slower) whenever the paint settings, zones or wall change.
-  const detectKey = JSON.stringify([wall?.sourceBlobId, wall?.quad, wall?.ceilingHeight, paint.tolerance, paint.taps, paint.strokes, ctx.project.zones]);
-  const paintKey = JSON.stringify([detectKey, paint.hex, paint.strength]);
+  // Live highlight of what the selected surface will paint.
+  const maskKey = JSON.stringify([target, wall?.sourceBlobId, wall?.quad, wall?.ceilingHeight, wall?.surfaces, target === 'wall' ? wall?.paint : null, ctx.project.zones]);
   useEffect(() => {
     if (!wall) return;
-    const my = ++job.current;
+    let dead = false;
     const t = setTimeout(async () => {
-      setStatus('detecting');
-      await nextFrame();
-      const { mask } = await wallMaskFor(wall, ctx.project.zones, paint);
-      if (my !== job.current) return;
-      lastOverlay.current = { url: previewUrl(mask), w: mask.w, h: mask.h, scale: mask.scale };
-      if (showAreaRef.current) ctx.setMaskOverlay(lastOverlay.current);
-      if (!paint.hex) { setStatus('idle'); return; }
-      setStatus('painting');
-      await nextFrame();
-      const out = await applyPaint(wall, ctx.project.zones, paint);
-      if (my !== job.current) return;
-      const p = getProject(ctx.project.id)!;
-      await saveProject({ ...p, wall: { ...p.wall!, ...out }, settings: { ...p.settings, showPaint: true } }, false);
-      setStatus('idle');
-    }, 250);
-    return () => clearTimeout(t);
-  }, [paintKey]);
+      const m = await targetMask(wall, ctx.project.zones, target);
+      if (dead) return;
+      const ov = m ? { url: previewUrl(m), w: m.w, h: m.h, scale: m.scale } : null;
+      ctx.setMaskOverlay(showArea ? ov : null);
+      lastOverlay.current = ov;
+    }, 150);
+    return () => { dead = true; clearTimeout(t); };
+  }, [maskKey, showArea]);
+  const lastOverlay = useRef<Parameters<ArrangeCtx['setMaskOverlay']>[0]>(null);
 
   useEffect(() => () => { ctx.setMaskOverlay(null); ctx.setPaintTool('none'); }, []);
 
   if (!wall) return <div class="hint">Add a wall photo first to preview paint colors.</div>;
 
-  const tools: { value: PaintTool; label: string; icon: string }[] = [
-    { value: 'none', label: 'Auto', icon: 'wand' },
-    { value: 'brush', label: 'Brush', icon: 'paint' },
-    { value: 'erase', label: 'Erase', icon: 'minus' },
-    { value: 'wand', label: 'Tap fill', icon: 'plus' },
+  const addSurface = async (kind: SurfaceKind) => {
+    const src = await loadBlobImg(wall.sourceBlobId);
+    const quad = kind === 'ceiling' ? suggestCeiling(wall, src.width) : kind === 'baseboard' ? suggestBaseboard(wall) : suggestArea(wall);
+    const n = (wall.surfaces ?? []).filter((s) => s.kind === kind).length;
+    const s: Surface = { id: uid(), name: `${SURFACE_LABEL[kind]}${n ? ` ${n + 1}` : ''}`, kind, quad, paint: kind === 'exclude' ? undefined : { ...DEFAULT_PAINT, tolerance: kind === 'ceiling' ? 0.6 : 0.5 } };
+    const p = getProject(ctx.project.id)!;
+    await saveProject({ ...p, wall: { ...p.wall!, surfaces: [...(p.wall!.surfaces ?? []), s] } }, false);
+    setAdding(false);
+    ctx.setPaintTarget(s.id);
+    openModal({ kind: 'surface', projectId: ctx.project.id, id: s.id });
+  };
+
+  const tools: { value: PaintTool; label: string }[] = [
+    { value: 'none', label: 'Auto' },
+    { value: 'brush', label: 'Brush' },
+    { value: 'erase', label: 'Erase' },
+    { value: 'wand', label: 'Tap fill' },
   ];
   const touchUps = (paint.strokes?.length ?? 0) + (paint.taps?.length ?? 0);
+  const targets = [{ id: 'wall', name: 'Wall', hex: wall.paint?.hex, kind: 'wall' as const }, ...(wall.surfaces ?? []).map((s) => ({ id: s.id, name: s.name, hex: s.paint?.hex, kind: s.kind }))];
 
   return (
     <>
-      <div class="row" style={{ justifyContent: 'space-between' }}>
-        <div class="row" style={{ gap: 8 }}>
-          {paint.hex && <span style={{ width: 24, height: 24, borderRadius: 7, background: paint.hex, display: 'inline-block', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.3)' }} />}
-          <b>{paint.hex ? paint.name || paint.hex : 'Pick a color'}</b>
-        </div>
-        {status !== 'idle' && <div class="row small-text muted" style={{ gap: 6 }}><div class="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />{status === 'detecting' ? 'Finding wall…' : 'Painting…'}</div>}
-      </div>
-      <Toggle label="Show new color" on={ctx.project.settings.showPaint && !!(ctx.mode === 'photo' ? wall.paintedSrcBlobId : wall.paintedBlobId)} onChange={(v) => ctx.commit((p) => ({ ...p, settings: { ...p.settings, showPaint: v } }))} />
-      <Toggle label="Highlight painted area" on={showArea} onChange={(v) => { setShowArea(v); ctx.setMaskOverlay(v ? lastOverlay.current : null); }} />
-
-      <div class="section-title">Painted area</div>
-      <div class="segmented" style={{ width: '100%' }}>
-        {tools.map((t) => (
-          <button key={t.value} class={ctx.paintTool === t.value ? 'on' : ''} style={{ flex: 1, padding: '0 6px' }} data-testid={`paint-tool-${t.value}`} onClick={() => { ctx.setPaintTool(t.value); if (t.value !== 'none') { setShowArea(true); ctx.setMaskOverlay(lastOverlay.current); } }}>{t.label}</button>
-        ))}
-      </div>
-      <div class="hint">
-        {ctx.paintTool === 'none' && <>The whole wall is found automatically from your pinned area. Use <b>Sensitivity</b> to spread further or pull back.</>}
-        {ctx.paintTool === 'brush' && <>Drag on the wall to <b>add</b> areas that were missed.</>}
-        {ctx.paintTool === 'erase' && <>Drag to <b>remove</b> areas that shouldn’t be painted (trim, fixtures, other walls).</>}
-        {ctx.paintTool === 'wand' && <>Tap a missed patch of wall to fill it.</>}
-      </div>
-      {(ctx.paintTool === 'brush' || ctx.paintTool === 'erase') && (
-        <label class="field"><span>Brush size</span><input type="range" min={10} max={120} step={2} value={ctx.brushPx} onInput={(e) => ctx.setBrushPx(+(e.target as HTMLInputElement).value)} /></label>
-      )}
-      <label class="field">
-        <span>Sensitivity · {Math.round(paint.tolerance * 100)}%</span>
-        <input type="range" min={0} max={1} step={0.02} value={paint.tolerance} data-testid="paint-tolerance" onInput={(e) => savePaint({ ...paint, tolerance: +(e.target as HTMLInputElement).value })} />
-      </label>
-      <div class="row wrap">
-        <button class="btn small" disabled={!touchUps} onClick={() => {
-          const strokes = [...(paint.strokes ?? [])];
-          if (strokes.length) strokes.pop();
-          else return savePaint({ ...paint, taps: (paint.taps ?? []).slice(0, -1) });
-          savePaint({ ...paint, strokes });
-        }}><Icon name="undo" size={16} /> Undo touch-up</button>
-        <button class="btn small" disabled={!touchUps} onClick={() => savePaint({ ...paint, strokes: [], taps: [] })}>Clear touch-ups</button>
-      </div>
-      {!wall.ceilingHeight && (
-        <LengthInput label="Ceiling height (keeps paint off the ceiling)" value={ceilingHeightOf(wall) ?? 0} onChange={(v) => { const p = getProject(ctx.project.id)!; saveProject({ ...p, wall: { ...p.wall!, ceilingHeight: v } }, false); }} placeholder="e.g. 96" />
-      )}
-
-      <div class="section-title">Color</div>
-      <input class="input" placeholder="Search Sherwin-Williams colors" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
-      <div class="chips scroll">
-        {PAINT_FAMILIES.map((f) => <button key={f} class={`chip ${family === f ? 'on' : ''}`} onClick={() => setFamily(f)}>{f}</button>)}
-      </div>
-      <div class="swatch-grid">
-        {list.map((p) => (
-          <button key={p.code} class={`swatch ${paint.hex === p.hex ? 'on' : ''}`} onClick={() => { setShowArea(false); ctx.setMaskOverlay(null); ctx.setPaintTool('none'); savePaint({ ...paint, hex: p.hex, name: `${p.name} ${p.code}` }); }}>
-            <div class="c" style={{ background: p.hex }} />
-            <div class="l">{p.name}<br />{p.code}</div>
+      <div class="section-title">Surface</div>
+      <div class="chips">
+        {targets.map((t) => (
+          <button key={t.id} class={`chip ${target === t.id ? 'on' : ''}`} data-testid={`surface-${t.kind}`} onClick={() => { ctx.setPaintTarget(t.id); setShowArea(true); }}>
+            {t.kind === 'exclude' ? <Icon name="zone" size={12} /> : <span class="dot" style={{ background: t.hex || 'transparent', boxShadow: t.hex ? undefined : 'inset 0 0 0 1px rgba(255,255,255,0.5)' }} />}
+            {t.name}
           </button>
         ))}
+        <button class={`chip ${adding ? 'on' : ''}`} data-testid="add-surface" onClick={() => setAdding(!adding)}><Icon name="plus" size={12} /> Add</button>
       </div>
-      <div class="row">
-        <span class="grow">Custom color</span>
-        <input type="color" value={paint.hex || '#d1cbc1'} onChange={(e) => savePaint({ ...paint, hex: (e.target as HTMLInputElement).value, name: 'Custom' })} style={{ width: 54, height: 36, border: 0, background: 'transparent' }} />
-      </div>
-      <label class="field"><span>Strength</span><input type="range" min={0.2} max={1} step={0.05} value={paint.strength} onChange={(e) => savePaint({ ...paint, strength: +(e.target as HTMLInputElement).value })} /></label>
-      <div class="faint small-text">Colors keep your photo’s real light and shadows. Screen colors are approximate — check a physical chip.</div>
+      {adding && (
+        <div class="col glass" style={{ padding: 10, borderRadius: 14, gap: 6 }}>
+          <button class="list-btn" data-testid="add-ceiling" onClick={() => addSurface('ceiling')}><div class="t"><div>Ceiling</div><div>Found from your measurements — adjust the 4 points</div></div></button>
+          <button class="list-btn" data-testid="add-baseboard" onClick={() => addSurface('baseboard')}><div class="t"><div>Baseboard</div><div>A strip along the floor line</div></div></button>
+          <button class="list-btn" onClick={() => addSurface('trim')}><div class="t"><div>Trim / molding</div><div>Door or window casing, chair rail…</div></div></button>
+          <button class="list-btn" onClick={() => addSurface('area')}><div class="t"><div>Custom area</div><div>An accent section, a second wall…</div></div></button>
+          <button class="list-btn" data-testid="add-exclude" onClick={() => addSurface('exclude')}><div class="t"><div>No-paint area</div><div>Keep something exactly as photographed</div></div></button>
+        </div>
+      )}
+      {surface && (
+        <div class="row wrap">
+          <button class="btn small" onClick={() => openModal({ kind: 'surface', projectId: ctx.project.id, id: surface.id })}><Icon name="pen" size={16} /> Edit outline</button>
+          <button class="btn small danger" onClick={() => {
+            const p = getProject(ctx.project.id)!;
+            ctx.setPaintTarget('wall');
+            saveProject({ ...p, wall: { ...p.wall!, surfaces: (p.wall!.surfaces ?? []).filter((s) => s.id !== surface.id) } }, false);
+          }}><Icon name="trash" size={16} /> Remove</button>
+        </div>
+      )}
+
+      {surface?.kind === 'exclude' ? (
+        <div class="hint">Nothing inside this outline is painted — useful for furniture, art already on the wall, or a doorway.</div>
+      ) : (
+        <>
+          <div class="row" style={{ justifyContent: 'space-between' }}>
+            <div class="row" style={{ gap: 8 }}>
+              {paint.hex && <span style={{ width: 24, height: 24, borderRadius: 7, background: paint.hex, display: 'inline-block', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.3)' }} />}
+              <b>{paint.hex ? paint.name || paint.hex : 'Pick a color'}</b>
+              {paint.hex && <button class="btn small ghost" onClick={() => savePaint({ ...paint, hex: '', name: '' })}>Clear</button>}
+            </div>
+            {painting && <div class="row small-text muted" style={{ gap: 6 }}><div class="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />Painting…</div>}
+          </div>
+          <Toggle label="Show new colors" on={ctx.project.settings.showPaint} onChange={(v) => ctx.commit((p) => ({ ...p, settings: { ...p.settings, showPaint: v } }))} />
+          <Toggle label="Highlight this surface" on={showArea} onChange={(v) => { setShowArea(v); ctx.setMaskOverlay(v ? lastOverlay.current : null); }} />
+
+          <div class="segmented" style={{ width: '100%' }}>
+            {tools.map((t) => (
+              <button key={t.value} class={ctx.paintTool === t.value ? 'on' : ''} style={{ flex: 1, padding: '0 6px' }} data-testid={`paint-tool-${t.value}`} onClick={() => { ctx.setPaintTool(t.value); if (t.value !== 'none') setShowArea(true); }}>{t.label}</button>
+            ))}
+          </div>
+          <div class="hint">
+            {ctx.paintTool === 'none' && (target === 'wall'
+              ? <>The whole wall is found automatically. Add a <b>Ceiling</b> or <b>Baseboard</b> above to paint those separately.</>
+              : <>Detected inside the outline you drew. Use <b>Sensitivity</b> to spread further or pull back.</>)}
+            {ctx.paintTool === 'brush' && <>Drag on the photo to <b>add</b> areas that were missed.</>}
+            {ctx.paintTool === 'erase' && <>Drag to <b>remove</b> areas that shouldn’t be painted.</>}
+            {ctx.paintTool === 'wand' && <>Tap a missed patch to fill it.</>}
+          </div>
+          {(ctx.paintTool === 'brush' || ctx.paintTool === 'erase') && (
+            <label class="field"><span>Brush size</span><input type="range" min={10} max={120} step={2} value={ctx.brushPx} onInput={(e) => ctx.setBrushPx(+(e.target as HTMLInputElement).value)} /></label>
+          )}
+          <label class="field">
+            <span>Sensitivity · {Math.round(paint.tolerance * 100)}%</span>
+            <input type="range" min={0} max={1} step={0.02} value={paint.tolerance} data-testid="paint-tolerance" onInput={(e) => savePaint({ ...paint, tolerance: +(e.target as HTMLInputElement).value })} />
+          </label>
+          <div class="row wrap">
+            <button class="btn small" disabled={!touchUps} onClick={() => {
+              const strokes = [...(paint.strokes ?? [])];
+              if (strokes.length) { strokes.pop(); savePaint({ ...paint, strokes }); }
+              else savePaint({ ...paint, taps: (paint.taps ?? []).slice(0, -1) });
+            }}><Icon name="undo" size={16} /> Undo touch-up</button>
+            <button class="btn small" disabled={!touchUps} onClick={() => savePaint({ ...paint, strokes: [], taps: [] })}>Clear touch-ups</button>
+          </div>
+          {target === 'wall' && !wall.ceilingHeight && (
+            <LengthInput label="Ceiling height (keeps paint off the ceiling)" value={ceilingHeightOf(wall) ?? 0} onChange={(v) => { const p = getProject(ctx.project.id)!; saveProject({ ...p, wall: { ...p.wall!, ceilingHeight: v } }, false); }} placeholder="e.g. 96" />
+          )}
+
+          <div class="section-title">Color</div>
+          <input class="input" placeholder="Search Sherwin-Williams colors" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+          <div class="chips scroll">
+            {PAINT_FAMILIES.map((f) => <button key={f} class={`chip ${family === f ? 'on' : ''}`} onClick={() => setFamily(f)}>{f}</button>)}
+          </div>
+          <div class="swatch-grid">
+            {list.map((p) => (
+              <button key={p.code} class={`swatch ${paint.hex === p.hex ? 'on' : ''}`} onClick={() => {
+                setShowArea(false);
+                ctx.setMaskOverlay(null);
+                ctx.setPaintTool('none');
+                ctx.commit((pr) => ({ ...pr, settings: { ...pr.settings, showPaint: true } }));
+                savePaint({ ...paint, hex: p.hex, name: `${p.name} ${p.code}` });
+              }}>
+                <div class="c" style={{ background: p.hex }} />
+                <div class="l">{p.name}<br />{p.code}</div>
+              </button>
+            ))}
+          </div>
+          <div class="row">
+            <span class="grow">Custom color</span>
+            <input type="color" value={paint.hex || '#d1cbc1'} onChange={(e) => { setShowArea(false); ctx.setMaskOverlay(null); savePaint({ ...paint, hex: (e.target as HTMLInputElement).value, name: 'Custom' }); }} style={{ width: 54, height: 36, border: 0, background: 'transparent' }} />
+          </div>
+          <label class="field"><span>Strength</span><input type="range" min={0.2} max={1} step={0.05} value={paint.strength} onChange={(e) => savePaint({ ...paint, strength: +(e.target as HTMLInputElement).value })} /></label>
+          <div class="faint small-text">Colors keep your photo’s real light and shadows. Screen colors are approximate — check a physical chip.</div>
+        </>
+      )}
     </>
   );
 }
@@ -673,6 +722,15 @@ function WallPanel({ ctx }: { ctx: ArrangeCtx }) {
       <div class="section-title">Spacing</div>
       <LengthInput label="Preferred gap between frames" value={st.gap} onChange={(v) => set({ gap: v })} />
       <Toggle label="Snap to edges, gaps & guides" on={st.snap} onChange={(v) => set({ snap: v })} />
+      <div class="section-title">Grid</div>
+      <Toggle label="Show grid on the wall" on={!!st.showGrid} onChange={(v) => set({ showGrid: v })} />
+      <LengthInput label="Grid size" value={st.gridSize ?? 6} onChange={(v) => v > 0 && set({ gridSize: v, showGrid: true })} />
+      <div class="chips">
+        {[1, 2, 3, 4, 6, 12].map((g) => (
+          <button key={g} class={`chip ${(st.gridSize ?? 6) === g && st.showGrid ? 'on' : ''}`} onClick={() => set({ gridSize: g, showGrid: true })}>{fmtLen(g, ctx.units)}</button>
+        ))}
+      </div>
+      <div class="faint small-text">Lines start at the left edge of your measured area and at the floor; every foot is drawn a little stronger. With snapping on, frames snap to the grid.</div>
       {u && (
         <>
           <div class="section-title">This arrangement</div>
